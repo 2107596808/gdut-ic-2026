@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>邵钜权 · 个人主页</title>
+<meta name="description" content="邵钜权的个人主页：专业、兴趣、项目与联系方式">
+<!--
+  个人主页（GitHub Pages 站点首页）
+  ============================================================================
+  部署方法（README 里有详细步骤）：
+    1. 把本文件所在目录（docs/）推到 GitHub 仓库
+    2. 仓库 Settings → Pages → Source 选 "Deploy from a branch"
+       Branch 选 main，Folder 选 /docs，保存
+    3. 等 1~2 分钟，访问 https://2107596808.github.io/gdut-ic-2026/
+  纯 HTML/CSS，无框架、无外链、无 JS 依赖，双击也能直接看。
+  ============================================================================
+-->
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-soft: #171a23;
+    --card: #1d212c;
+    --ink: #eef1f7;
+    --ink-dim: #98a1b5;
+    --accent: #6ea8fe;
+    --accent-2: #7ee2b8;
+    --line: #2a3040;
+    --radius: 14px;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f5f1;
+      --bg-soft: #ffffff;
+      --card: #ffffff;
+      --ink: #23262d;
+      --ink-dim: #6b7280;
+      --accent: #1f6feb;
+      --accent-2: #0f766e;
+      --line: #e6e2da;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, "PingFang SC", sans-serif;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 20px 72px;
+  }
+
+  /* ---------------- 头部 ---------------- */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex-wrap: wrap;
+    padding-bottom: 26px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .avatar {
+    width: 92px;
+    height: 92px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+    font-weight: 800;
+    color: #0b1020;
+    flex: none;
+    user-select: none;
+  }
+
+  .who h1 {
+    margin: 0 0 4px;
+    font-size: 30px;
+    letter-spacing: .5px;
+  }
+
+  .who p {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 15px;
+  }
+
+  /* ---------------- 通用卡片 ---------------- */
+  section { margin-top: 34px; }
+
+  h2 {
+    font-size: 17px;
+    margin: 0 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  h2::before {
+    content: "";
+    width: 4px;
+    height: 17px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+
+  .card + .card { margin-top: 12px; }
+
+  .card h3 {
+    margin: 0 0 6px;
+    font-size: 15.5px;
+  }
+
+  .card p {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 14.5px;
+  }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+  .tag {
+    font-size: 12.5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    color: var(--ink-dim);
+  }
+
+  ul.plain { margin: 0; padding-left: 20px; color: var(--ink-dim); font-size: 14.5px; }
+  ul.plain li { margin: 4px 0; }
+
+  /* ---------------- 项目 ---------------- */
+  .project {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+
+  .project + .project { margin-top: 12px; }
+
+  .project h3 { margin: 0 0 6px; font-size: 16px; }
+  .project .meta { font-size: 13px; color: var(--ink-dim); margin-bottom: 8px; }
+  .project p { margin: 0 0 10px; color: var(--ink-dim); font-size: 14.5px; }
+
+  .links { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  a.btn {
+    display: inline-block;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--ink);
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 7px 13px;
+    transition: border-color .15s, transform .08s;
+  }
+
+  a.btn:hover { border-color: var(--accent); }
+  a.btn:active { transform: translateY(1px); }
+  a.btn.primary { background: var(--accent); color: #0b1020; border-color: transparent; }
+
+  /* ---------------- 联系方式 ---------------- */
+  .contact {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+  }
+
+  .contact a {
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+  }
+
+  .contact a:hover { text-decoration: underline; }
+
+  footer {
+    margin-top: 44px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-dim);
+    text-align: center;
+  }
+
+  footer a { color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ======================= 头部 ======================= -->
+  <header>
+    <div class="avatar">邵</div>
+    <div class="who">
+      <h1>邵钜权</h1>
+      <p>集成电路与集成系统 1 班·广东工业大学 集成电路学院</p>
+    </div>
+  </header>
+
+  <!-- ======================= 自我介绍 ======================= -->
+  <section>
+    <h2>自我介绍</h2>
+    <div class="card">
+      <p>
+        我是邵钜权，广东工业大学集成电路学院集成电路与集成系统专业的大一新生。
+        最感兴趣的是硬件和代码的交界处：一边把电路的理论值算一遍、再用 PySpice 仿真一遍，看两者差在哪里；
+        一边写点小项目，比如给 2048 写一个会自动下棋的 AI。
+      </p>
+      <p>
+        这次考核印象最深的一句话是「AI 写代码很快，但判断它对不对只能靠自己」——
+        移植 expectimax 时，置换表的缓存键整整错了三版，每一版都「看起来对」，
+        最后是写脚本把两个棋盘的键算出来逐位比对才找到的。从那以后我养成了先定验收标准、再动手的习惯。
+        希望能加入协会，和更多同学一起把东西真正做出来。
+      </p>
+    </div>
+  </section>
+
+  <!-- ======================= 兴趣方向 ======================= -->
+  <section>
+    <h2>兴趣方向</h2>
+    <div class="card">
+      <ul class="plain">
+        <li>模拟电路与仿真 —— 用 PySpice 把 RC 低通、戴维南定理、NMOS 共源放大三个电路「手算 + 仿真」各做一遍</li>
+        <li>算法与数据结构 —— 借 2048 的 AI 练搜索：expectimax、位棋盘、置换表、迭代加深</li>
+        <li>工程习惯与版本控制 —— 习惯用 Git 分步提交，动手之前先想清楚「怎么验收」</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================= 技能 ======================= -->
+  <section>
+    <h2>技能与工具</h2>
+    <div class="card">
+      <div class="tags">
+        <span class="tag">Python</span>
+        <span class="tag">JavaScript</span>
+        <span class="tag">Git</span>
+        <span class="tag">VS Code</span>
+        <span class="tag">Linux 命令行</span>
+        <span class="tag">PySpice</span>
+        <span class="tag">AI 编程工具</span>
+      </div>
+      <p style="margin-top:12px">正在学：Verilog 与数字电路设计、集成电路设计与仿真流程。</p>
+    </div>
+  </section>
+
+  <!-- ======================= 项目 ======================= -->
+  <section>
+    <h2>项目经历</h2>
+
+    <div class="project">
+      <h3>2048 游戏 + AI 自动求解</h3>
+      <div class="meta">纯前端单文件 · HTML / CSS / JavaScript</div>
+      <p>
+        阶段一是可以自己玩的完整 2048（键盘 / 鼠标拖拽 / 触屏都能操作，含计分制、主题切换、
+        最近 10 局战绩）；阶段二加入了 AI 自动演示：评估用角块启发式（把大块堆到角落），
+        搜索用 expectimax，随机落子回合对每个空格按 90% 出 2 / 10% 出 4 做全宽期望，
+        深度随局面自适应。为了让搜索够快，整个棋盘被压成两个 32 位整数的位棋盘。
+      </p>
+      <p><strong>实测结果</strong>：固定 10 个种子各跑一整局（全程无人工），
+        合出 1024 与 2048 的达成率都是 39/40 = 98%，其中 31 局合出 4096、4 局合出 8192；平均 2973 步、单次决策 1.1 ms。</p>
+      <div class="links">
+        <!-- GitHub Pages 只发布 docs/ 目录，所以这里必须写完整网址（不能写 ../game/） -->
+        <a class="btn primary" href="https://2107596808.github.io/gdut-ic-2026/game/index.html">▶ 现在就玩（含 AI 演示）</a>
+        <a class="btn" href="https://github.com/2107596808/gdut-ic-2026/tree/main/game">看看代码</a>
+      </div>
+    </div>
+
+    <div class="project">
+      <h3>PySpice 三个电路（RC 低通 / 戴维南验证 / NMOS 共源放大）</h3>
+      <div class="meta">Python · PySpice · ngspice</div>
+      <p>
+        
+        例如：RC 低通滤波（τ=100 µs / fc≈1591.5 Hz）、戴维南定理验证（V_th=9 V、R_th=3 kΩ）、
+        NMOS 共源放大电路（I_D=0.8 mA、V_DS=3.4 V、|Av|≈3.10），三个电路都写了公式推导与对比表。
+      </p>
+      <div class="links">
+        <a class="btn" href="https://github.com/2107596808/gdut-ic-2026/tree/main/circuits">看看代码</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= 联系方式 ======================= -->
+  <section>
+    <h2>联系方式</h2>
+    <div class="card contact">
+      <div>邮箱：<a href="mailto:2107596808@qq.com">2107596808@qq.com</a></div>
+      <div>GitHub：<a href="https://github.com/2107596808">github.com/2107596808</a></div>
+      <div>个人简介 PDF：<a href="个人简介.pdf">点击下载</a></div>
+    </div>
+  </section>
+
+  <footer>
+    用纯 HTML/CSS 手写，托管在 GitHub Pages ·
+    <a href="https://github.com/2107596808/gdut-ic-2026">仓库源码</a>
+  </footer>
+
+</div>
+</body>
+</html>
