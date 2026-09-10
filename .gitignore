@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PySpice / ngspice 运行缓存与中间文件
+circuits/out/*.raw
+circuits/out/*.log
+*.spice
+*.cir
+*.net
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时产物
+*.tmp
+*.bak
+npm-debug.log*
