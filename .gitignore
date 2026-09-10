@@ -23,3 +23,13 @@ desktop.ini
 *.tmp
 *.bak
 npm-debug.log*
+
+# 开发时用来调参/打点的脚手架（不提交）
+_scratch/
+_dbg*.mjs
+_tune*.mjs
+_new_ai*.txt
+_splice_ai*.py
+
+# AI 编程工具在本地生成的仓库工作说明，不属于交付物
+CLAUDE.md
