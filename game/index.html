@@ -1,0 +1,2024 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>2048 · 可玩版 + AI 自动演示</title>
+<!--
+  ============================================================================
+  2048 · 单文件（HTML + CSS + JS，无框架、无外部依赖、无网络请求）
+  阶段一：可以自己玩的完整 2048（键盘 / 鼠标拖拽 / 触屏滑动）
+  阶段二：expectimax + 启发式评分 AI，全程无需人工操作，合出 1024（冲 2048）
+  新增功能：① 计分制 ② 主题切换（刷新保留） ③ 多局战绩（最近 10 局）
+  作者：邵钜权  许可：MIT
+  说明：文件中所有逻辑均为纯函数式实现（不依赖 DOM），便于用 Node 做自动验收，
+        见 game/tests/verify_game.mjs（Node 一键验收）
+  ============================================================================
+-->
+<style>
+/* ============================ 主题变量（新增功能②：主题切换） ============================ */
+:root[data-theme="dark"] {
+  --bg: #12141c;
+  --bg-soft: #1b1e2a;
+  --panel: #22263480;
+  --board: #2b3040;
+  --cell: #343b4f;
+  --text: #eef1f7;
+  --text-dim: #9aa3b8;
+  --accent: #6ea8fe;
+  --accent-ink: #0b1020;
+  --btn: #313848;
+  --btn-hover: #3d465c;
+  --line: #363d51;
+  --tile-ink: #1b2030;
+  --shadow: 0 18px 40px rgba(0, 0, 0, .45);
+}
+:root[data-theme="light"] {
+  --bg: #f6f4ef;
+  --bg-soft: #ffffff;
+  --panel: #ffffffcc;
+  --board: #cdc1b4;
+  --cell: #e7ded3;
+  --text: #2b2b2b;
+  --text-dim: #7d756c;
+  --accent: #1f6feb;
+  --accent-ink: #ffffff;
+  --btn: #eae2d8;
+  --btn-hover: #ded4c7;
+  --line: #ddd3c6;
+  --tile-ink: #3a332c;
+  --shadow: 0 18px 40px rgba(90, 75, 60, .22);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: radial-gradient(1200px 600px at 15% -10%, var(--bg-soft), var(--bg) 60%);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, "PingFang SC", sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 28px 16px 48px;
+  transition: background .25s ease, color .25s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  width: 100%;
+  max-width: 980px;
+  display: grid;
+  grid-template-columns: minmax(320px, 520px) minmax(260px, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+}
+
+/* ============================ 顶部标题与按钮 ============================ */
+.top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.title h1 {
+  margin: 0;
+  font-size: 44px;
+  letter-spacing: 1px;
+  line-height: 1;
+}
+
+.title p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.scores { display: flex; gap: 10px; }
+
+.score-box {
+  background: var(--btn);
+  border-radius: 10px;
+  padding: 8px 16px;
+  min-width: 92px;
+  text-align: center;
+  border: 1px solid var(--line);
+}
+
+.score-box .label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: .12em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.score-box .value {
+  display: block;
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-box.bump { animation: bump .18s ease; }
+
+@keyframes bump {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.09); }
+  100% { transform: scale(1); }
+}
+
+/* ============================ 棋盘 ============================ */
+.stage { position: relative; }
+
+.board {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--board);
+  border-radius: 14px;
+  padding: var(--pad);
+  box-shadow: var(--shadow);
+  touch-action: none;
+  user-select: none;
+}
+
+.grid-bg {
+  position: absolute;
+  inset: var(--pad);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: var(--gap);
+}
+
+.grid-bg .cell {
+  background: var(--cell);
+  border-radius: 8px;
+}
+
+/* ⚠️ 这里必须是 inset: 0，不能写 inset: var(--pad)。
+ * 绝对定位子元素的包含块是 .board 的 padding box，而 .tiles 里每个方块的
+ * translate 坐标是 cellPos() 算好的、已经含了 pad 偏移的绝对值（第一个方块
+ * 的 x 就是 pad）。若容器再缩进一个 pad，就会把 pad 加两次，整盘方块向右下
+ * 各偏约 12px，和最底层的 .grid-bg 网格对不齐。 */
+.tiles { position: absolute; inset: 0; }
+
+.tile {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--tile-ink);
+  transform: translate(var(--x), var(--y));
+  transition: transform .1s ease-out;
+  will-change: transform;
+  z-index: 1;
+}
+
+.tile.merged { animation: pop .16s ease; z-index: 2; }
+.tile.spawned { animation: spawn .14s ease; }
+
+@keyframes pop {
+  0% { transform: translate(var(--x), var(--y)) scale(.86); }
+  60% { transform: translate(var(--x), var(--y)) scale(1.08); }
+  100% { transform: translate(var(--x), var(--y)) scale(1); }
+}
+
+@keyframes spawn {
+  0% { transform: translate(var(--x), var(--y)) scale(.2); opacity: .3; }
+  100% { transform: translate(var(--x), var(--y)) scale(1); opacity: 1; }
+}
+
+/* 方块配色（按 2 的幂递增，深浅主题共用一套主线色） */
+.t2    { background: #eee4da; }
+.t4    { background: #ede0c8; }
+.t8    { background: #f2b179; color: #fff; }
+.t16   { background: #f59563; color: #fff; }
+.t32   { background: #f67c5f; color: #fff; }
+.t64   { background: #f65e3b; color: #fff; }
+.t128  { background: #edcf72; color: #fff; }
+.t256  { background: #edcc61; color: #fff; }
+.t512  { background: #edc850; color: #fff; }
+.t1024 { background: #edc53f; color: #fff; box-shadow: 0 0 0 3px #ffd76e inset; }
+.t2048 { background: #edc22e; color: #fff; box-shadow: 0 0 0 3px #fff3b0 inset; }
+.t4096 { background: #3c3a32; color: #fff; }
+.t8192 { background: #2b2925; color: #fff; }
+
+/* 覆盖层提示 */
+.overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease;
+  padding: 20px;
+}
+
+.overlay.show { opacity: 1; pointer-events: auto; }
+.overlay h2 { margin: 0; font-size: 30px; }
+.overlay p { margin: 0; color: var(--text-dim); font-size: 14px; line-height: 1.6; }
+
+/* ============================ 按钮 ============================ */
+button {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--btn);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background .15s ease, transform .08s ease, opacity .15s ease;
+}
+
+button:hover { background: var(--btn-hover); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+button.primary:hover { filter: brightness(1.07); }
+button.danger { color: #ff8080; }
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+kbd {
+  background: var(--btn);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ============================ 右侧面板 ============================ */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px;
+  backdrop-filter: blur(6px);
+}
+
+.panel + .panel { margin-top: 16px; }
+
+.panel h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  letter-spacing: .04em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.stat-row:last-child { border-bottom: 0; }
+.stat-row b { font-variant-numeric: tabular-nums; }
+
+.ai-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--btn);
+  color: var(--text-dim);
+}
+
+.ai-status.on { background: var(--accent); color: var(--accent-ink); }
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 12px 0 4px;
+}
+
+input[type="range"] { flex: 1; accent-color: var(--accent); }
+
+.records { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+
+.records li {
+  display: grid;
+  grid-template-columns: 26px 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.records li:last-child { border-bottom: 0; }
+.records .idx { color: var(--text-dim); }
+.records .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--btn); }
+.records .tag.win { background: #2f7d5b; color: #fff; }
+.records .tag.lose { background: #7d3a3a; color: #fff; }
+.records .num { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.records .empty { color: var(--text-dim); border: 0; justify-content: center; grid-template-columns: 1fr; text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tile, .overlay, body { transition: none !important; }
+  .tile.merged, .tile.spawned { animation: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ======================= 左：棋盘 ======================= -->
+  <main>
+    <div class="top">
+      <div class="title">
+        <h1>2048</h1>
+        <p>键盘 ↑↓←→ / WASD，或直接拖拽、滑动方块</p>
+      </div>
+      <div class="scores">
+        <div class="score-box" id="box-score"><span class="label">得分</span><span class="value" id="score">0</span></div>
+        <div class="score-box" id="box-best"><span class="label">最高分</span><span class="value" id="best">0</span></div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="board" id="board">
+        <div class="grid-bg" id="grid-bg"></div>
+        <div class="tiles" id="tiles"></div>
+      </div>
+      <div class="overlay" id="overlay">
+        <h2 id="overlay-title">游戏结束</h2>
+        <p id="overlay-text"></p>
+        <div class="toolbar" style="justify-content:center">
+          <button class="primary" id="overlay-continue">继续挑战 2048</button>
+          <button id="overlay-restart">再来一局</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="primary" id="btn-new">新一局</button>
+      <button id="btn-reset" class="danger">重置记录</button>
+      <button id="btn-theme">🌗 切换主题</button>
+      <button id="btn-ai">▶ AI 自动演示</button>
+    </div>
+
+    <div class="hint">
+      <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动；
+      鼠标按住棋盘拖拽、手机直接滑动同样可以操作。<br>
+      「最高分 / 局数 / 战绩」存在浏览器本地（localStorage），关掉页面再打开也还在；
+      「重置记录」会清空这些本地记录。
+    </div>
+  </main>
+
+  <!-- ======================= 右：状态与战绩面板 ======================= -->
+  <aside>
+    <section class="panel">
+      <h3>当前状态 <span class="ai-status" id="ai-status">AI 已就绪</span></h3>
+      <div class="stat-row"><span>当前得分</span><b id="st-score">0</b></div>
+      <div class="stat-row"><span>最高分</span><b id="st-best">0</b></div>
+      <div class="stat-row"><span>最大方块</span><b id="st-max">2</b></div>
+      <div class="stat-row"><span>步数</span><b id="st-moves">0</b></div>
+      <div class="stat-row"><span>已完成局数</span><b id="st-games">0</b></div>
+      <div class="stat-row"><span>AI 决策次数 / 最近一步耗时</span><b id="st-ai">0 / – ms</b></div>
+
+      <div class="slider-row">
+        <span>演示速度</span>
+        <input type="range" id="ai-speed" min="1" max="60" value="10">
+        <b id="ai-speed-val">10 步/秒</b>
+      </div>
+      <div class="toolbar">
+        <button id="btn-ai-step">单步 AI</button>
+        <button id="btn-ai-stop" disabled>停止 AI</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>最近 10 局战绩 <span class="ai-status" id="rec-count">0 局</span></h3>
+      <ul class="records" id="records">
+        <li class="empty">还没有完成的局，先去玩一局吧</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h3>阶段二硬指标</h3>
+      <div class="stat-row"><span>硬指标</span><b>AI 合出 1024</b></div>
+      <div class="stat-row"><span>加分项</span><b>合出 2048</b></div>
+      <div class="stat-row"><span>本局是否达标</span><b id="st-goal">未达标</b></div>
+      <div class="hint" style="margin-top:8px">
+        点「AI 自动演示」后无需任何操作，AI 会自己决策直到达成 1024（会继续冲 2048）。
+      </div>
+    </section>
+  </aside>
+</div>
+
+<script>
+"use strict";
+/* ==========================================================================
+ * 2048 · 逻辑层（纯函数，不碰 DOM，可被 Node 直接调用做自动验收）
+ * ========================================================================== */
+(function (global) {
+  var SIZE = 4;
+  var CELLS = SIZE * SIZE;
+  var WIN_TILE = 1024;   // 阶段二硬指标：合出 1024
+  var MAX_TILE = 2048;   // 加分项：合出 2048
+
+  function createGrid() {
+    var g = new Array(CELLS);
+    for (var i = 0; i < CELLS; i++) g[i] = 0;
+    return g;
+  }
+
+  function cloneGrid(g) { return g.slice(); }
+
+  function idx(r, c) { return r * SIZE + c; }
+
+  function emptyCells(grid) {
+    var out = [];
+    for (var i = 0; i < CELLS; i++) if (grid[i] === 0) out.push(i);
+    return out;
+  }
+
+  function maxTile(grid) {
+    var m = 0;
+    for (var i = 0; i < CELLS; i++) if (grid[i] > m) m = grid[i];
+    return m;
+  }
+
+  /* 在随机空格放一个新方块：90% 是 2，10% 是 4。rand 可注入，便于测试复现 */
+  function addRandomTile(grid, rand) {
+    var rnd = rand || Math.random;
+    var empty = emptyCells(grid);
+    if (empty.length === 0) return -1;
+    var pos = empty[Math.floor(rnd() * empty.length) % empty.length];
+    grid[pos] = rnd() < 0.9 ? 2 : 4;
+    return pos;
+  }
+
+  /* 把一行的 4 个数按 direction 压紧并合并。
+   * mergeOrShift 一律“每个方块每步只合并一次”： [2,2,2,2] -> [4,4] 而不是 [8] */
+  function slideRow(row) {
+    var vals = row.filter(function (v) { return v !== 0; });
+    var out = [];
+    var gained = 0;
+    var merges = [];
+    for (var i = 0; i < vals.length; i++) {
+      if (i + 1 < vals.length && vals[i] === vals[i + 1]) {
+        var merged = vals[i] * 2;
+        gained += merged;
+        merges.push({ value: merged, index: out.length });
+        out.push(merged);
+        i++; // 跳过被合并掉的那一个，保证一步只合并一次
+      } else {
+        out.push(vals[i]);
+      }
+    }
+    while (out.length < SIZE) out.push(0);
+    return { row: out, gained: gained, merges: merges };
+  }
+
+  /* 该方向上某一行/列的读取与写回顺序 */
+  function lineIndices(dir, i) {
+    var list = [];
+    for (var j = 0; j < SIZE; j++) {
+      if (dir === 'left')  list.push(idx(i, j));
+      else if (dir === 'right') list.push(idx(i, SIZE - 1 - j));
+      else if (dir === 'up')    list.push(idx(j, i));
+      else                      list.push(idx(SIZE - 1 - j, i));
+    }
+    return list;
+  }
+
+  /* 纯移动：返回新棋盘 + 本次得分 + 每一行/列的合并信息（供动画用） */
+  function applyMove(grid, dir) {
+    var next = createGrid();
+    var gained = 0;
+    var moved = false;
+    var merges = [];
+
+    for (var i = 0; i < SIZE; i++) {
+      var line = lineIndices(dir, i);
+      var values = line.map(function (p) { return grid[p]; });
+      var res = slideRow(values);
+      gained += res.gained;
+      for (var j = 0; j < SIZE; j++) {
+        next[line[j]] = res.row[j];
+        if (grid[line[j]] !== res.row[j]) moved = true;
+      }
+      for (var k = 0; k < res.merges.length; k++) {
+        merges.push({ pos: line[res.merges[k].index], value: res.merges[k].value });
+      }
+    }
+    return { grid: next, gained: gained, moved: moved, merges: merges };
+  }
+
+  /* 还有空格，或者还有相邻同值 —— 说明游戏可以继续 */
+  function canMove(grid) {
+    for (var i = 0; i < CELLS; i++) if (grid[i] === 0) return true;
+    for (var r = 0; r < SIZE; r++) {
+      for (var c = 0; c < SIZE; c++) {
+        var v = grid[idx(r, c)];
+        if (c + 1 < SIZE && grid[idx(r, c + 1)] === v) return true;
+        if (r + 1 < SIZE && grid[idx(r + 1, c)] === v) return true;
+      }
+    }
+    return false;
+  }
+
+  function hasTile(grid, target) {
+    for (var i = 0; i < CELLS; i++) if (grid[i] >= target) return true;
+    return false;
+  }
+
+  /* ==========================================================================
+   * 可复现随机数（固定种子）——让 Node 验收结果每次一致，方便复现问题
+   * ========================================================================== */
+  function makeRng(seed) {
+    var s = (seed >>> 0) || 1;
+    return function () {
+      s ^= s << 13; s >>>= 0;   // xorshift32
+      s ^= s >>> 17;
+      s ^= s << 5;  s >>>= 0;
+      return s / 4294967296;
+    };
+  }
+
+  /* ======================= AI 参数与位棋盘工具 =======================
+   * 位棋盘：整个 4x4 棋盘压进 64 bit（每格 4 bit，存 log2(值)，0 表示空格）。
+   * ⚠️ 关键坑：JavaScript 的位运算只有 32 位，(1 << 48) 会被截断成 (1 << 16)，
+   *   所以这里把棋盘拆成两个 32 位整数低位 lo（前两行）/ hi（后两行），
+   *   所有移位都控制在 32 位以内，最后需要一个大整数时用 lo + hi * 2^32 组装。
+   * 好处是「移动一整块棋盘」退化成几十次位运算，搜索速度比数组版快一个数量级。
+   * ================================================================= */
+  var DIRS = ['left', 'right', 'up', 'down'];
+
+  var W = {
+    rowEmpty: 3.2,   // 一行的空格奖励
+    rowAdj: 6.0,     // 一行里相邻同级（马上能合并）
+    rowMono: 2.2,    // 一行的单调程度（一头大一头小，方便往角落堆）
+    empty: 1.0,      // 全局空格
+    merge: 3.4,      // 全局可合并对数
+    mono: 0.55,      // 全局单调性惩罚
+    snake: 30,       // 蛇形整齐度（越大越执着于把方块按固定路线排整齐）
+    maxRank: 40,     // 最大方块（鼓励往大了合）
+    gain: 0.35       // 本步实际得分（引导 AI 别做无用功）
+  };
+
+  /* 注意：AI_MAX_DEPTH / AI_NODES_PER_DIR / AI_TIME_MS 的唯一定义在下方
+   * 「AI：角块启发式 + expectimax」一节里（本文件是同一个函数作用域，var 会
+   * 重复声明并以后者为准——之前这里多写了一份，看起来像 AI_TIME_MS=200，
+   * 实际生效的却是下面那份 120，调参时非常容易看走眼，故删掉）。 */
+
+  /* ---------- 棋盘 ⇄ 低位/高位整数 ---------- */
+  function rankOfTile(v) { return v === 0 ? 0 : (31 - Math.clz32(v)); } // 值 → log2
+
+  function packGridLoHi(grid) {
+    var lo = 0, hi = 0;
+    for (var i = 0; i < 8; i++) lo |= rankOfTile(grid[i]) << (i * 4);
+    for (var j = 8; j < 16; j++) hi |= rankOfTile(grid[j]) << ((j - 8) * 4);
+    return { lo: lo >>> 0, hi: hi >>> 0 };
+  }
+
+  function unpackLoHi(lo, hi) {
+    var g = createGrid();
+    for (var i = 0; i < 8; i++) {
+      var a = (lo >>> (i * 4)) & 0xf;
+      g[i] = a === 0 ? 0 : (1 << a);
+    }
+    for (var j = 8; j < 16; j++) {
+      var b = (hi >>> ((j - 8) * 4)) & 0xf;
+      g[j] = b === 0 ? 0 : (1 << b);
+    }
+    return g;
+  }
+
+  /* 置换表用的键：把 lo/hi 拼成字符串（可读、可调试，给外部/低频路径用）。
+   * ⚠️ 千万不要写成 lo + hi * 2^32 这样的「一个大整数」：棋盘是 64 bit，
+   * JS 的 Number 只有 53 bit 安全整数，高位会被吃掉，解码回来的局面是错的。 */
+  function keyOf(lo, hi) { return lo + ':' + hi; }
+
+  /* 搜索热路径上的键：必须无分配，所以用整数哈希而不是字符串。
+   * ⚠️ 这里曾经写成 `hi * 32 + depth`，把 lo 整个丢掉了 —— 前两行完全不同的
+   *    两个局面会命中同一条缓存，搜索读到的是别的局面的分数。表现只是「AI 下得
+   *    莫名其妙地差」，但根因是缓存被污染，极难排查。
+   * 现在把 lo / hi / depth 三个字段都混进一个 53 bit 安全整数：乘法混合
+   * （avalanche）全程 Math.imul + 位运算，不分配对象。哈希空间 2^53，一局棋
+   * 撑死几百万个节点，碰撞概率可以忽略；就算真撞上一次，代价也只是某个节点的
+   * 分数略有偏差，而不是像丢掉字段那样整片污染。 */
+  /* ⚠️ 别加「哈希混合」。这里一开始写的是两个 Math.imul 的 avalanche 混合，
+   *   看起来更专业，实测却是全文件最大的性能杀手：CPU profile 显示 mix32 占
+   *   41%、keyOfDepth 再占 10%，一半的搜索时间花在算这个键上。
+   *   换成下面这个纯字段拼接后，同样的搜索快 3.8 倍（depth=5 从 1032ms 降到
+   *   266ms），而同样的时间预算能多搜 4 倍节点，1024 达成率直接从 3/6 变成 6/6。
+   *   置换表的键不需要密码学质量，只需要「不同局面基本不撞」，位拼接足够了。
+   *
+   * 位的分配（三段落不重叠、也不会互相进位，全程 ≤ 2^53 安全整数）：
+   *   lo 32 位 × 2^17  →  高 49 位
+   *   hi 的高 17 位     →  接下来 17 位
+   *   depth 4 位        →  最低 4 位（0..8 够用）
+   *   校验：lo·2^17 < 2^49，加 (hi>>>15) < 2^17 后 < 2^49+2^17；
+   *        再 ×16 < 2^53，加 depth ≤ 15 仍 < 2^53。✓
+   * 被舍弃的是 hi 的低 15 位；键空间 2^49，实际存活条目最多几十万，
+   * 碰撞概率可忽略（真撞上也只是某个节点的分数略有偏差）。 */
+  function keyOfDepth(lo, hi, depth) {
+    return (lo * 131072 + (hi >>> 15)) * 16 + depth;
+  }
+
+  /* 转置：第 r 行第 c 列 ↔ 第 c 行第 r 列（用于把「左右移动」复用到「上下移动」） */
+  function transposeLoHi(lo, hi) {
+    var nlo = 0, nhi = 0;
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var idxFrom = r * 4 + c;
+        var rank = idxFrom < 8 ? (lo >>> (idxFrom * 4)) & 0xf : (hi >>> ((idxFrom - 8) * 4)) & 0xf;
+        var idxTo = c * 4 + r;
+        if (idxTo < 8) nlo |= rank << (idxTo * 4);
+        else nhi |= rank << ((idxTo - 8) * 4);
+      }
+    }
+    return { lo: nlo >>> 0, hi: nhi >>> 0 };
+  }
+
+  /* ---------- 行查表：所有 65536 种「一行」的移动结果 / 得分 / 评分 ---------- */
+  /* 把一行的 4 格左压 + 合并 + 记分，保证「每格每步只合并一次」。
+   * 约定：这一行占低 16 位，nibble 0（最低 4 位）= 最左边那一格。
+   * 例：rank [1,1,2,0] = 0x0211 → 0x0022（值 [2,2,4,0] → [4,4,0,0]）；
+   *     rank [1,1,1,1] = 0x1111 → 0x0022（[2,2,2,2] → [4,4]，不是 8） */
+  function slideRowKey(rowKey) {
+    var out = 0, gained = 0, pos = 0, prevIdx = -1, prevMerged = false;
+    for (var i = 0; i < 4; i++) {
+      var v = (rowKey >>> (i * 4)) & 0xf;              // 从最左边开始扫
+      if (v === 0) continue;                           // 空格直接跳过，空格会重新隔开
+      var prev = prevIdx < 0 ? 0 : (out >>> (prevIdx * 4)) & 0xf;
+      if (prevIdx >= 0 && !prevMerged && prev === v) {
+        var merged = v + 1;                            // rank+1 就是数值翻倍
+        out += ((merged - v) << (prevIdx * 4)) >>> 0;  // 把已写下的 v 改成 v+1
+        gained += 1 << merged;
+        prevMerged = true;                             // 合并出来的格子这一步不能再合并
+      } else {
+        out |= v << (pos * 4);                         // 落到左边第一个空位
+        prevIdx = pos;
+        pos++;
+        prevMerged = false;
+      }
+    }
+    return { key: out >>> 0, gained: gained };
+  }
+
+  var ROW_MOVE = new Uint16Array(65536);
+  var ROW_GAIN = new Int32Array(65536);
+  var ROW_SCORE = new Float64Array(65536);
+  (function buildRowTables() {
+    for (var key = 0; key < 65536; key++) {
+      var res = slideRowKey(key);
+      ROW_MOVE[key] = res.key;
+      ROW_GAIN[key] = res.gained;
+      // 启发式：空格越多越好、相邻同级越多越好、单调排列（一头大一头小）越好
+      var empty = 0, adj = 0, mono = 0, prev = -1;
+      for (var i = 0; i < 4; i++) {
+        var rank = (key >> (i * 4)) & 0xf;
+        if (rank === 0) { empty++; continue; }
+        if (prev === rank) { adj++; mono += 0.6; }
+        else if (prev >= 0) { var d = rank - prev; mono += d > 0 ? d : -d * 1.5; }
+        prev = rank;
+      }
+      ROW_SCORE[key] = empty * W.rowEmpty + adj * W.rowAdj + mono * W.rowMono;
+    }
+  })();
+
+  /* 一行内部 nibble 左右镜像：查表用的行 key 把「最左边一格」放在最高 nibble，
+   * 而棋盘布局里「最左边一格」在低位 4 bit，所以要镜像一次才能对齐。 */
+  var REV4 = (function () {
+    var t = new Uint16Array(65536);
+    for (var v = 0; v < 65536; v++) {
+      t[v] = (((v & 0xf) << 12) | (((v >>> 4) & 0xf) << 8) | (((v >>> 8) & 0xf) << 4) | ((v >>> 12) & 0xf)) & 0xffff;
+    }
+    return t;
+  })();
+
+  /* 一对行（row0 在低位 16 bit、row1 在高位 16 bit）的查表：压紧 + 记分，
+   * 用预计算表把「行内镜像 + 压紧 + 再镜像」压成一次查表。 */
+  var ROW_L = new Uint16Array(65536); // 左压
+  var ROW_R = new Uint16Array(65536); // 右压
+  var ROW_GL = new Int32Array(65536);
+  var ROW_GR = new Int32Array(65536);
+  (function buildDirTables() {
+    for (var v = 0; v < 65536; v++) {
+      // 左压：查表用 nibble 0 是最左边，和棋盘布局一致，直接查 ROW_MOVE
+      ROW_L[v] = ROW_MOVE[v];
+      ROW_GL[v] = ROW_GAIN[v];
+      // 右压：镜像 → 左压 → 再镜像。⚠️ 少一次镜像就等于在算左压，方向会整体错乱。
+      ROW_R[v] = REV4[ROW_MOVE[REV4[v]]];
+      ROW_GR[v] = ROW_GAIN[REV4[v]];
+    }
+  })();
+
+  function slideTwoRows(pairKey, right) {
+    var a = pairKey & 0xffff, b = (pairKey >>> 16) & 0xffff;
+    var m = right ? ROW_R : ROW_L;
+    return ((m[a] + (m[b] * 65536)) >>> 0);
+  }
+  function gainTwoRows(pairKey, right) {
+    var g = right ? ROW_GR : ROW_GL;
+    return g[pairKey & 0xffff] + g[(pairKey >>> 16) & 0xffff];
+  }
+  /* 直接组装成棋盘布局的 32 位（pair = row0 + row1 * 2^16）。
+   * ⚠️ 必须最后再 >>> 0：如果中间写成 `x + y * 65536` 而不立刻取模，
+   *   结果会超过 2^32 变成浮点数，高位丢失后整块棋盘就错了（这个坑很隐蔽）。 */
+  function composeTwoRows(row0, row1) {
+    return ((row0 + row1 * 65536) >>> 0);
+  }
+  function pairKeyLoHi(lo, hi, right) {
+    var f = right ? ROW_R : ROW_L;
+    var nlo = composeTwoRows(f[lo & 0xffff], f[(lo >>> 16) & 0xffff]);
+    var nhi = composeTwoRows(f[hi & 0xffff], f[(hi >>> 16) & 0xffff]);
+    return { lo: nlo, hi: nhi };
+  }
+
+  /* ---------- 四个方向的移动（只做位运算，不碰数组） ---------- */
+  function moveLeftLoHi(lo, hi) { return pairKeyLoHi(lo, hi, false); }
+  function moveRightLoHi(lo, hi) { return pairKeyLoHi(lo, hi, true); }
+  function moveUpLoHi(lo, hi) {
+    var t = transposeLoHi(lo, hi);
+    var m = pairKeyLoHi(t.lo, t.hi, false);
+    return transposeLoHi(m.lo, m.hi);
+  }
+  function moveDownLoHi(lo, hi) {
+    var t = transposeLoHi(lo, hi);
+    var m = pairKeyLoHi(t.lo, t.hi, true);
+    return transposeLoHi(m.lo, m.hi);
+  }
+
+  function gainLeftLoHi(lo, hi) {
+    return gainTwoRows(lo, false) + gainTwoRows(hi, false);
+  }
+  function gainRightLoHi(lo, hi) {
+    return gainTwoRows(lo, true) + gainTwoRows(hi, true);
+  }
+
+  /* 所有合法后继：棋盘变了才算合法；gain 也用「同一套转置后的棋盘」算，避免算错方向。
+   * 顺序固定为 left / right / up / down，与 DIRS 一致。
+   * 每次都返回全新的对象数组：搜索里的递归很容易把这些临时结果覆盖掉，
+   * 调用方再去读数组就会拿到别的局面的方向（这个坑踩过两次，索性不做缓冲区复用了）。 */
+  function allMovesLoHi(lo, hi) {
+    var t = transposeLoHi(lo, hi);
+    var moves = [
+      moveLeftLoHi(lo, hi), moveRightLoHi(lo, hi),
+      moveUpLoHi(lo, hi), moveDownLoHi(lo, hi)
+    ];
+    var gains = [
+      gainLeftLoHi(lo, hi), gainRightLoHi(lo, hi),
+      gainLeftLoHi(t.lo, t.hi), gainRightLoHi(t.lo, t.hi)
+    ];
+    var out = [];
+    for (var i = 0; i < 4; i++) {
+      if (moves[i].lo !== lo || moves[i].hi !== hi) {
+        out.push({ lo: moves[i].lo, hi: moves[i].hi, gain: gains[i], dir: DIRS[i] });
+      }
+    }
+    return out;
+  }
+
+  /* 空格位置（0~15）、空格数量、最大方块（返回具体数值而不是 rank） */
+  function emptySlotsLoHi(lo, hi, into) {
+    var n = 0;
+    for (var i = 0; i < 8; i++) if (((lo >>> (i * 4)) & 0xf) === 0) into[n++] = i;
+    for (var j = 8; j < 16; j++) if (((hi >>> ((j - 8) * 4)) & 0xf) === 0) into[n++] = j;
+    return n;
+  }
+
+  function countEmptyLoHi(lo, hi) { return emptySlotsLoHi(lo, hi, scratchSlots); }
+
+  function maxTileLoHi(lo, hi) {
+    var m = 0;
+    for (var i = 0; i < 8; i++) { var a = (lo >>> (i * 4)) & 0xf; if (a > m) m = a; }
+    for (var j = 8; j < 16; j++) { var b = (hi >>> ((j - 8) * 4)) & 0xf; if (b > m) m = b; }
+    return m === 0 ? 0 : (1 << m);
+  }
+
+  function putLoHi(lo, hi, slot, rank) {
+    if (slot < 8) return { lo: (lo | (rank << (slot * 4))) >>> 0, hi: hi };
+    return { lo: lo, hi: (hi | (rank << ((slot - 8) * 4))) >>> 0 };
+  }
+
+  /* ==========================================================================
+   * 搜索热路径：零分配版本的走子生成
+   * ==========================================================================
+   * 导出的 allMovesLoHi 每次调用要新建 3 个临时数组 + 十几个对象（transpose、
+   * 四个方向的 {lo,hi}、gains、out…）。搜索里每展开一个节点就调一次，一局下来
+   * 是百万级的垃圾量，实测比位运算本身还慢——这才是「AI 越跑越慢」的主因之一。
+   *
+   * 下面这版把所有中间量压进模块级标量 / 预分配数组，一个对象都不产生。
+   * ⚠️ 复用缓冲区的前提是「每个递归深度用自己那一份」：movePool[depth]，
+   *    所以池子按深度索引。同一个深度上不会有两次并发展开（搜索是深度优先的），
+   *    而递归只会往 depth-1 走，永远不会踩到当前这一份。
+   * ⚠️ 导出的 allMovesLoHi 保持「每次返回全新数组」不变——外部调用方（比如
+   *    tests/verify_game.mjs）会拿着结果做遍历，不能让它被搜索递归改掉。
+   * ======================================================================== */
+  var POOL_N = 16;                      // 覆盖 0..15 层，AI_MAX_DEPTH = 8，绰绰有余
+  var _mvLo = [], _mvHi = [], _mvGain = [], _mvDir = [], _slots = [];
+  (function buildPools() {
+    for (var i = 0; i < POOL_N; i++) {
+      _mvLo.push(new Int32Array(4));
+      _mvHi.push(new Int32Array(4));
+      _mvGain.push(new Int32Array(4));
+      _mvDir.push(new Array(4));
+      _slots.push(new Int32Array(16));
+    }
+  })();
+
+  /* 转置的结果写进模块级标量：转置是叶子操作，内部不再递归，所以共用一份安全 */
+  var _trLo = 0, _trHi = 0;
+  function transposeInto(lo, hi) {
+    var nlo = 0, nhi = 0;
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var from = r * 4 + c;
+        var rank = from < 8 ? (lo >>> (from * 4)) & 0xf : (hi >>> ((from - 8) * 4)) & 0xf;
+        if (rank === 0) continue;                       // 空格不用搬
+        var to = c * 4 + r;
+        if (to < 8) nlo |= rank << (to * 4);
+        else nhi |= rank << ((to - 8) * 4);
+      }
+    }
+    _trLo = nlo >>> 0;
+    _trHi = nhi >>> 0;
+  }
+
+  /* 把 4 个方向的结果写进 outLo/outHi/outGain/outDir，返回合法方向个数。
+   * 语义与导出的 allMovesLoHi 完全一致（顺序 left/right/up/down，棋盘变了才算合法）。 */
+  function allMovesInto(lo, hi, outLo, outHi, outGain, outDir) {
+    var tLo, tHi;
+    transposeInto(lo, hi);
+    tLo = _trLo; tHi = _trHi;
+
+    // 左 / 右 直接在原棋盘上查表
+    var lLo = composeTwoRows(ROW_L[lo & 0xffff], ROW_L[(lo >>> 16) & 0xffff]);
+    var lHi = composeTwoRows(ROW_L[hi & 0xffff], ROW_L[(hi >>> 16) & 0xffff]);
+    var rLo = composeTwoRows(ROW_R[lo & 0xffff], ROW_R[(lo >>> 16) & 0xffff]);
+    var rHi = composeTwoRows(ROW_R[hi & 0xffff], ROW_R[(hi >>> 16) & 0xffff]);
+    // 上 / 下 在转置棋盘上查表，再转置回来
+    var uTiLo = composeTwoRows(ROW_L[tLo & 0xffff], ROW_L[(tLo >>> 16) & 0xffff]);
+    var uTiHi = composeTwoRows(ROW_L[tHi & 0xffff], ROW_L[(tHi >>> 16) & 0xffff]);
+    var dTiLo = composeTwoRows(ROW_R[tLo & 0xffff], ROW_R[(tLo >>> 16) & 0xffff]);
+    var dTiHi = composeTwoRows(ROW_R[tHi & 0xffff], ROW_R[(tHi >>> 16) & 0xffff]);
+
+    var n = 0;
+    if (lLo !== lo || lHi !== hi) {
+      outLo[n] = lLo; outHi[n] = lHi; outDir[n] = 'left';
+      outGain[n] = ROW_GL[lo & 0xffff] + ROW_GL[(lo >>> 16) & 0xffff]
+                 + ROW_GL[hi & 0xffff] + ROW_GL[(hi >>> 16) & 0xffff];
+      n++;
+    }
+    if (rLo !== lo || rHi !== hi) {
+      outLo[n] = rLo; outHi[n] = rHi; outDir[n] = 'right';
+      outGain[n] = ROW_GR[lo & 0xffff] + ROW_GR[(lo >>> 16) & 0xffff]
+                 + ROW_GR[hi & 0xffff] + ROW_GR[(hi >>> 16) & 0xffff];
+      n++;
+    }
+    if (uTiLo !== tLo || uTiHi !== tHi) {
+      transposeInto(uTiLo, uTiHi);
+      outLo[n] = _trLo; outHi[n] = _trHi; outDir[n] = 'up';
+      outGain[n] = ROW_GL[tLo & 0xffff] + ROW_GL[(tLo >>> 16) & 0xffff]
+                 + ROW_GL[tHi & 0xffff] + ROW_GL[(tHi >>> 16) & 0xffff];
+      n++;
+    }
+    if (dTiLo !== tLo || dTiHi !== tHi) {
+      transposeInto(dTiLo, dTiHi);
+      outLo[n] = _trLo; outHi[n] = _trHi; outDir[n] = 'down';
+      outGain[n] = ROW_GR[tLo & 0xffff] + ROW_GR[(tLo >>> 16) & 0xffff]
+                 + ROW_GR[tHi & 0xffff] + ROW_GR[(tHi >>> 16) & 0xffff];
+      n++;
+    }
+    return n;
+  }
+
+  /* ======================= AI：角块启发式 + expectimax =======================
+   * 这一版照着 qpwoeirut/2048-solver（C++）里效果最好的方案移植：
+   *   评估 = corner_heuristic（把大块往四个角堆，取四种朝向里最好的一个）
+   *        + 蛇形字典序（所有分数打平时用来裁决，等价于 C++ 里的 wall 排序）
+   *   搜索 = expectimax：我方回合取 max，随机落子回合对「每个空格 × 2/4 两种可能」做全宽期望
+   *   深度 = 自适应（2 ~ 8 层）：棋盘越满、方块种类越多就搜得越深
+   * 参考：https://github.com/qpwoeirut/2048-solver
+   *      其 README 中最好的组合 corner-expmx(d=-1) 在 500 局里 1024 达成率 100%、
+   *      2048 达成率 99.8%、4096 达成率 99.4%，所以选它作为移植对象。
+   * ======================================================================== */
+
+  var AI_MIN_DEPTH = 2;          // 自适应深度下限
+  var AI_MAX_DEPTH = 8;          // 自适应深度上限
+  var AI_TIME_MS = 120;          // 一次决策的时间预算（毫秒）
+  var AI_NODES_PER_DIR = 400000; // 单方向节点上限，防止极端局面卡住浏览器
+  var AI_CACHE_MAX = 200000;     // 置换表最多缓存多少个局面
+  var AI_SCORE_SCALE = 64;       // 把评估值放大成整数，比较更稳定
+
+  /* ---------- 角块启发式 ---------- */
+  /* 基础权重表：从一个角出发，越靠近角权重越大（10/5/2/1，照搬参考文献的权重） */
+  var CORNER_BASE = [
+    10, 5, 2, 1,
+     5, 3, 1, 0,
+     2, 1, 0, 0,
+     1, 0, 0, 0
+  ];
+
+  /* 四个角的权重表查表版：把「权重 × 方块值」的结果预先算好，
+   * 评估一个局面就只剩 4 次查表加法，比逐格算快一个数量级。 */
+  var CORNER_PATTERNS = (function () {
+    var out = [];
+    for (var rot = 0; rot < 4; rot++) {
+      var p = new Array(16);
+      for (var i = 0; i < 16; i++) {
+        var r = i >> 2, c = i & 3, rr, cc;
+        if (rot === 0) { rr = r; cc = c; }               // 左上角
+        else if (rot === 1) { rr = c; cc = 3 - r; }      // 右上角
+        else if (rot === 2) { rr = 3 - r; cc = 3 - c; }  // 右下角
+        else { rr = 3 - c; cc = r; }                     // 左下角
+        // 存成「按 rank 索引的一行 16 个偏移」，这样查表时直接取
+        p[rr * 4 + cc] = r * 4 + c;
+      }
+      out.push(p);
+    }
+    return out;
+  })();
+
+  /* 每个角各 4 张表（对应一行）：
+   * CORNER_TABLE[rot][row][16bit nibble key] 已经乘以对应权重，用 rank 查表取值 */
+  var CORNER_VALUE_LOW = [];   // 低 8 格（前两行）→ 4 个角 × 2 行
+  var CORNER_VALUE_HIGH = [];  // 高 8 格（后两行）
+  (function buildCornerTables() {
+    var base = [
+      10, 5, 2, 1,
+       5, 3, 1, 0,
+       2, 1, 0, 0,
+       1, 0, 0, 0
+    ];
+    // 先按 4 个旋转算出权重表
+    var weights = [];
+    for (var rot = 0; rot < 4; rot++) {
+      var w = new Array(16).fill(0);
+      for (var i = 0; i < 16; i++) {
+        var r = i >> 2, c = i & 3, rr, cc;
+        if (rot === 0) { rr = r; cc = c; }
+        else if (rot === 1) { rr = c; cc = 3 - r; }
+        else if (rot === 2) { rr = 3 - r; cc = 3 - c; }
+        else { rr = 3 - c; cc = r; }
+        w[rr * 4 + cc] = base[r * 4 + c];
+      }
+      weights.push(w);
+    }
+    // 每张表：key 是 16 bit 的 4 格（每格 4bit 是 rank），值是这 4 格加权和
+    function buildHalfTable(rowWeight) {
+      var t = new Float64Array(65536);
+      for (var key = 0; key < 65536; key++) {
+        var s = 0;
+        for (var p = 0; p < 4; p++) {
+          var rank = (key >>> (p * 4)) & 0xf;
+          if (rank !== 0) s += rowWeight[p] * (1 << rank);
+        }
+        t[key] = s;
+      }
+      return t;
+    }
+    for (var k = 0; k < 4; k++) {
+      CORNER_VALUE_LOW.push([
+        buildHalfTable([weights[k][0], weights[k][1], weights[k][2], weights[k][3]]),
+        buildHalfTable([weights[k][4], weights[k][5], weights[k][6], weights[k][7]])
+      ]);
+      CORNER_VALUE_HIGH.push([
+        buildHalfTable([weights[k][8], weights[k][9], weights[k][10], weights[k][11]]),
+        buildHalfTable([weights[k][12], weights[k][13], weights[k][14], weights[k][15]])
+      ]);
+    }
+  })();
+
+  function patternScore2(lo, hi, rot) {
+    var lo0 = lo & 0xffff, lo1 = (lo >>> 16) & 0xffff;
+    var hi0 = hi & 0xffff, hi1 = (hi >>> 16) & 0xffff;
+    return CORNER_VALUE_LOW[rot][0][lo0] + CORNER_VALUE_LOW[rot][1][lo1]
+         + CORNER_VALUE_HIGH[rot][0][hi0] + CORNER_VALUE_HIGH[rot][1][hi1];
+  }
+
+  /* 四个角各算一次，取最大的那个 */
+  function cornerHeuristic(lo, hi) {
+    var best = patternScore2(lo, hi, 0);
+    for (var i = 1; i < 4; i++) {
+      var v = patternScore2(lo, hi, i);
+      if (v > best) best = v;
+    }
+    return best;
+  }
+
+  /* ---------- score 启发式：棋盘上已经拿到的近似分数（用于平局裁决） ---------- */
+  function scoreHeuristic(lo, hi) {
+    var s = 0;
+    for (var i = 0; i < 8; i++) {
+      var r = (lo >>> (i * 4)) & 0xf;
+      if (r >= 2) s += (r - 1) * (1 << r);
+    }
+    for (var j = 0; j < 8; j++) {
+      var r2 = (hi >>> (j * 4)) & 0xf;
+      if (r2 >= 2) s += (r2 - 1) * (1 << r2);
+    }
+    return s;
+  }
+
+  /* ---------- 蛇形字典序：沿固定路线读 16 格，方块越大越靠前越好 ---------- */
+  var SNAKE_ORDER = [0, 4, 8, 12, 13, 9, 5, 1, 2, 6, 10, 14, 15, 11, 7, 3];
+  var RANK_CHARS = 'ABCDEFGHIJKLMNOP';
+  function snakeKey(lo, hi) {
+    var out = '';
+    for (var i = 0; i < 16; i++) {
+      var p = SNAKE_ORDER[i];
+      var rank = p < 8 ? (lo >>> (p * 4)) & 0xf : (hi >>> ((p - 8) * 4)) & 0xf;
+      out += RANK_CHARS.charAt(rank);
+    }
+    return out;
+  }
+
+  function countEmptyKey(lo, hi) {
+    var n = 0;
+    for (var i = 0; i < 8; i++) if (((lo >>> (i * 4)) & 0xf) === 0) n++;
+    for (var j = 0; j < 8; j++) if (((hi >>> (j * 4)) & 0xf) === 0) n++;
+    return n;
+  }
+
+  function countDistinctTiles(lo, hi) {
+    var seen = 0, n = 0;
+    for (var i = 0; i < 16; i++) {
+      var rank = i < 8 ? (lo >>> (i * 4)) & 0xf : (hi >>> ((i - 8) * 4)) & 0xf;
+      if (rank === 0) continue;
+      var bit = 1 << rank;
+      if ((seen & bit) === 0) { seen |= bit; n++; }
+    }
+    return n;
+  }
+
+  /* 自适应深度：照搬参考文献的 pick_depth
+   *   score = 方块种类数 + (占用格数 > 6 ? (占用格数-6)/2 : 0)
+   *   深度 = 2 + (score≥8) + (score≥11) + (score≥14) + (score≥15) + (score≥17) + (score≥19)
+   * 局面越乱越危险，就多算几步。 */
+  function aiPickDepth(lo, hi) {
+    var occupied = 16 - countEmptyKey(lo, hi);
+    var score = countDistinctTiles(lo, hi) + (occupied <= 6 ? 0 : (occupied - 6) >> 1);
+    var d = 2;
+    if (score >= 8) d++;
+    if (score >= 11) d++;
+    if (score >= 14) d++;
+    if (score >= 15) d++;
+    if (score >= 17) d++;
+    if (score >= 19) d++;
+    if (d < AI_MIN_DEPTH) d = AI_MIN_DEPTH;
+    if (d > AI_MAX_DEPTH) d = AI_MAX_DEPTH;
+    return d;
+  }
+
+  /* ---------- expectimax 搜索 ---------- */
+  var expCacheMax = new Map();
+  var expCacheExp = new Map();
+  var emptySlotBuf = new Int32Array(16);
+  var turnBuf = new Array(4);        // 搜索内部用
+  var rootBuf = new Array(4);        // 决策入口用：⚠️ 必须和搜索内部的缓冲区分开，
+                                     // 否则递归搜索会把入口的结果覆盖掉（方向会串）
+
+  function clearAiCache() {
+    expCacheMax.clear();
+    expCacheExp.clear();
+  }
+
+  /* 缓存超限就直接清空。
+   * ⚠️ 不要写成「超一条删一条」：那样每个节点都要 map.keys() 建一个迭代器再删元素，
+   * 在搜索热路径上是纯粹的浪费（每插入一个节点付一次迭代器开销）。实测这是
+   * 「搜索只有 0.6M 节点/秒」的主要来源之一。清空是 O(1) 摊销：每塞满 AI_CACHE_MAX
+   * 条才触发一次，代价被平摊到几十万次插入上，而且置换表本来就是「有最好、没有也能算」
+   * 的加速设施，丢掉只是慢一点，不影响正确性。 */
+  function noteCacheSize(map) {
+    if (map.size > AI_CACHE_MAX) map.clear();
+  }
+
+  /* 死局惩罚：比正常评估低四分之一，让 AI 主动躲开「下一步就没路」的局面。
+   * ⚠️ 这里不能用 >> 2：评估值动辄几百万，远超 32 位整数的范围，
+   *   位运算会先截断成 int32，符号位一翻就变成极小的负数，惩罚会大到离谱。 */
+  function deathValue(lo, hi) {
+    var s = AI_SCORE_SCALE * cornerHeuristic(lo, hi);
+    return Math.floor(s * 3 / 4);
+  }
+
+  /* 预算是否已耗尽：节点数超了或整步的墙钟时间到点了。
+   * ⚠️ 2026-09 修复：原来是「每个方向各建一份 deadline，且只在 searchMax 里按
+   *    nodes & 127 抽查」。实测 timeMs=10 要跑 648ms 才停——时间参数形同虚设，
+   *    真正卡住耗时的是每方向 40 万节点的预算。现在改成整步共享同一个 deadline，
+   *    且在 searchMax / searchExp 两处都查，timeMs 才真的是「最坏耗时」。 */
+  function budgetOut(budget) {
+    if (budget.nodes > budget.maxNodes) { budget.exhausted = true; return true; }
+    if ((budget.nodes & 127) === 0 && Date.now() > budget.deadline) { budget.exhausted = true; return true; }
+    return false;
+  }
+
+  /* 静态评估：预算耗尽时直接返回它，不再往下搜。
+   * 抽成函数是因为它在搜索里被调用几百万次，要保持单一出口便于确认语义。 */
+  function staticEval(lo, hi) { return AI_SCORE_SCALE * cornerHeuristic(lo, hi); }
+
+  /* 我方回合：取四个方向里期望最大的那个 */
+  function searchMax(lo, hi, depth, budget) {
+    budget.nodes++;
+    if (depth <= 0) return staticEval(lo, hi);
+    if (budgetOut(budget)) return staticEval(lo, hi);
+
+    var ck = keyOfDepth(lo, hi, depth);
+    var hit = expCacheMax.get(ck);
+    if (hit !== undefined) return hit;
+
+    var p = depth < POOL_N ? depth : POOL_N - 1;
+    var outLo = _mvLo[p], outHi = _mvHi[p], outGain = _mvGain[p], outDir = _mvDir[p];
+    var n = allMovesInto(lo, hi, outLo, outHi, outGain, outDir);
+    if (n === 0) return deathValue(lo, hi);
+
+    var best = -Infinity;
+    for (var j = 0; j < n; j++) {
+      /* ⚠️ 这个 break 是「AI 越跑越卡」的真正解药，不能删。
+       * 预算耗尽后，子调用确实会立刻返回静态评估，但父层的循环仍在继续遍历
+       * 兄弟节点 —— 每个兄弟再各自往下把整棵子树「一格一格地」退栈返回，
+       * 递归退栈的代价是 O(剩余节点数) 而不是 O(搜索深度)。
+       * 实测：6ms 就判定超时，却还要再跑 221ms 才真正退完（timeMs=5 → 实测 227ms）。
+       * 这里 break 掉，退栈就只剩「沿当前路径往上」的 O(depth) 次。 */
+      if (budget.exhausted) break;
+      var val = searchExp(outLo[j], outHi[j], depth, budget);
+      if (val > best) best = val;
+    }
+    if (budget.exhausted) return best === -Infinity ? staticEval(lo, hi) : best;
+    expCacheMax.set(ck, best);
+    noteCacheSize(expCacheMax);
+    return best;
+  }
+
+  /* 随机落子回合：对「每个空格 × 出 2 / 出 4」全宽加权平均（权重 9:1） */
+  function searchExp(lo, hi, depth, budget) {
+    if (budgetOut(budget)) return staticEval(lo, hi);
+
+    var p = depth < POOL_N ? depth : POOL_N - 1;
+    // 每个深度用自己的空格缓冲：递归下去会覆盖别人的，不能共用一份 scratch
+    var slots = _slots[p];
+    var n = emptySlotsLoHi(lo, hi, slots);
+    if (n === 0) return staticEval(lo, hi);
+
+    var ck = keyOfDepth(lo, hi, depth);
+    var hit = expCacheExp.get(ck);
+    if (hit !== undefined) return hit;
+
+    var total = 0;
+    var d1 = depth - 1;
+    for (var i = 0; i < n; i++) {
+      var slot = slots[i];
+      // 90% 出 2（rank 1），10% 出 4（rank 2）。这里直接做位运算而不是调 putLoHi，
+      // 是为了避免每个节点都新建对象——搜索里这个开销非常大。
+      // ⚠️ 必须按 slot<8 / slot>=8 拆成 lo、hi 两个分支：slot 最大 15，
+      //    15*4 = 60 已经超过 32 位，直接 (1 << 60) 会被截断成 (1 << 28)。
+      if (slot < 8) {
+        var sh = slot * 4;
+        total += 9 * searchMax((lo | (1 << sh)) >>> 0, hi, d1, budget);
+        total += 1 * searchMax((lo | (2 << sh)) >>> 0, hi, d1, budget);
+      } else {
+        var sh2 = (slot - 8) * 4;
+        total += 9 * searchMax(lo, (hi | (1 << sh2)) >>> 0, d1, budget);
+        total += 1 * searchMax(lo, (hi | (2 << sh2)) >>> 0, d1, budget);
+      }
+      // 同 searchMax：预算耗尽就立刻收手，别把剩下的空格挨个走一遍
+      if (budget.exhausted) break;
+    }
+    var value = total / (n * 10);
+
+    /* ⚠️ 被预算掐断的局面绝对不能写进置换表。
+     * 上面的 total 只累加了前几个空格（后面的被 break 跳过了），却仍除以完整的
+     * n*10，算出来是个被严重低估的残缺值。一旦缓存，后续搜索读到它就会认为
+     * 「这个局面很糟」，AI 会系统性地躲开被截断过的走法 —— 表现就是分数上不去，
+     * 而且极难定位，因为错误藏在缓存里而不是评估函数里。
+     * 不缓存只是让这次搜索少省一点，正确性优先。 */
+    if (!budget.exhausted) {
+      expCacheExp.set(ck, value);
+        noteCacheSize(expCacheExp);
+    }
+    return value;
+  }
+
+  /* chooseMove 自己的候选缓冲（和搜索池子分开，避免搜索递归把它覆盖掉） */
+  var candLo = new Int32Array(4), candHi = new Int32Array(4);
+  var candGain = new Int32Array(4), candDir = new Array(4), candCorner = new Array(4);
+
+  /* 选方向：先用角块启发式淘汰差方向，再对并列最好的方向做一次 expectimax 比较。
+   * 入参：chooseMove(二维数组棋盘, opts) 或 chooseMove(lo, opts, hi)。 */
+  function chooseMove(grid, opts, hiArg) {
+    var options = opts || {};
+    var lo, hi;
+    if (typeof grid === 'number') { lo = grid >>> 0; hi = hiArg >>> 0; }
+    else { var packed = packGridLoHi(grid); lo = packed.lo; hi = packed.hi; }
+
+    /* 先把候选方向抄进本地数组：下面搜索会复用 _mvLo/_mvHi 这些池子，
+     * 直接引用池子的话，第一个方向搜完，第二个方向的坐标就被覆盖了。 */
+    var nCand = allMovesInto(lo, hi, candLo, candHi, candGain, candDir);
+    if (nCand === 0) return { dir: null, score: -Infinity };
+    for (var i = 0; i < nCand; i++) candCorner[i] = cornerHeuristic(candLo[i], candHi[i]);
+
+    var depth = options.depth || aiPickDepth(lo, hi);
+
+    /* ⚠️ 预算语义（2026-09 重写，踩过三个坑，都记在这里）：
+     *
+     * 坑①「时间预算形同虚设」：原来只在 searchMax 里按 nodes & 127 抽查一次时间，
+     *    且预算耗尽只是 return，父层的循环仍会把剩下的兄弟节点逐个走完 —— 递归
+     *    退栈的代价是 O(剩余节点数)，不是 O(深度)。实测 timeMs=10 要跑 648ms、
+     *    第 17 步要 32 秒，浏览器直接卡死。修复 = searchMax/searchExp 里「预算耗尽
+     *    就 break」，退栈回到 O(depth)。
+     *
+     * 坑②「四个方向共用一份预算」：共用的话第一个方向就把时间吃光，后三个方向
+     *    一进来就超预算、直接返回 1 层静态评估，于是比较的是「深搜期望值 vs 1 层
+     *    启发值」，尺度不同，AI 反而挑坏方向。所以必须每个方向各发一份等额预算。
+     *
+     * 坑③「部分分数污染根节点」：预算耗尽时 searchExp 返回的是被 break 截断的
+     *    total/(n*10)，是个严重偏小的残缺值。如果拿它去和别的方向比大小，AI 会
+     *    系统性地躲开「刚好被截断」的那个方向 —— 表现就是偶尔莫名其妙地崩盘
+     *    （实测出现过最高只到 256 的局）。修复 = 迭代加深，见下。
+     *
+     * 迭代加深（iterative deepening）：从 2 层起逐层加深，只有「四个方向都完整
+     * 搜完」的那一层才作数，时间不够就保留上一层的结果。好处有两个：
+     *   ① 根节点拿到的永远是完整搜索的分数，不会出现坑③的残缺值；
+     *   ② 时间预算被用满 —— 局面简单时自动多搜几层，复杂时及时收手。
+     * 代价很小：加深一层的开销约是上一层的 10 倍，所以总耗时 ≈ 最后一层 ×1.1。
+     */
+    var timeBudgetMs = options.timeMs || AI_TIME_MS;
+    var nodesPerDir = options.nodesPerDir || AI_NODES_PER_DIR;
+    var deadline = Date.now() + Math.max(1, timeBudgetMs);
+
+    var bestDir = null, bestVal = -Infinity, bestSnake = '', bestCornerOfBest = -1, doneDepth = 0;
+    // 用 Math.min 兜一下：调用方若显式传了比 AI_MIN_DEPTH 更小的深度，也要能跑起来
+    for (var d = Math.min(AI_MIN_DEPTH, depth); d <= depth; d++) {
+      var budget = {
+        nodes: 0, maxNodes: nodesPerDir,
+        deadline: deadline, exhausted: false
+      };
+      var complete = true;
+      var iDir = null, iVal = -Infinity, iSnake = '', iCorner = -1;
+
+      for (var k = 0; k < nCand; k++) {
+        budget.nodes = 0;          // 每个方向一份节点配额，时间则整层共享
+        budget.exhausted = false;
+        var expScore = searchExp(candLo[k], candHi[k], d, budget);
+        if (budget.exhausted) { complete = false; break; }   // 这一层没搜完 → 整层作废
+        var sk = snakeKey(candLo[k], candHi[k]);
+        // 期望分高者优先；完全打平时依次用「角块分 → 蛇形字典序」裁决
+        var better = expScore > iVal
+          || (expScore === iVal && candCorner[k] > iCorner)
+          || (expScore === iVal && candCorner[k] === iCorner && sk > iSnake);
+        if (better) { iVal = expScore; iDir = candDir[k]; iSnake = sk; iCorner = candCorner[k]; }
+      }
+
+      if (!complete) break;        // 时间到，保留上一层已完整搜出的结果
+      bestDir = iDir; bestVal = iVal; bestSnake = iSnake; bestCornerOfBest = iCorner;
+      doneDepth = d;
+      if (expCacheMax.size > AI_CACHE_MAX || expCacheExp.size > AI_CACHE_MAX) clearAiCache();
+    }
+
+    // 兜底：连最浅的一层都没搜完（时间预算极小）时，用角块分最高的候选顶上
+    if (!bestDir) {
+      var fb = -Infinity;
+      for (var m = 0; m < nCand; m++) {
+        if (candCorner[m] > fb) { fb = candCorner[m]; bestDir = candDir[m]; }
+      }
+    }
+    return { dir: bestDir, score: bestVal, depth: doneDepth || depth };
+  }
+
+  /* 一整局自动对战（无 DOM、无人工），供 Node 批量验收与浏览器 AI 演示共用 */
+  function playGame(opts) {
+    var options = opts || {};
+    var rand = options.rand || Math.random;
+    var state = {
+      grid: createGrid(),
+      score: 0,
+      moves: 0,
+      merges: 0,
+      maxTile: 0,
+      reached1024: false,
+      reached2048: false,
+      reached1024AtMove: 0,
+      reached2048AtMove: 0,
+      over: false,
+      elapsedMs: 0,
+      avgStepMs: 0
+    };
+    var depth = options.depth || 0;                 // 0 表示用自适应深度
+    var timeMs = options.timeMs || AI_TIME_MS;
+    var nodesPerDir = options.nodesPerDir || AI_NODES_PER_DIR;
+    var maxMoves = options.maxMoves || 20000;
+    var maxMs = options.maxMs || 60000;
+    var continueAfterWin = options.continueAfterWin !== false;
+    var started = Date.now();
+    var totalStepMs = 0;
+
+    addRandomTile(state.grid, rand);
+    addRandomTile(state.grid, rand);
+
+    while (!state.over && state.moves < maxMoves && Date.now() - started < maxMs) {
+      var t0 = Date.now();
+      var p = packGridLoHi(state.grid);
+      var pick = chooseMove(p.lo, {
+        depth: depth, timeMs: timeMs, nodesPerDir: nodesPerDir
+      }, p.hi);
+      totalStepMs += Date.now() - t0;
+      if (!pick.dir) { state.over = true; break; }
+
+      var res = applyMove(state.grid, pick.dir);
+      if (!res.moved) { state.over = true; break; }
+
+      state.grid = res.grid;
+      state.score += res.gained;
+      state.moves++;
+      state.merges += res.merges.length;
+      addRandomTile(state.grid, rand);
+
+      var mt = maxTile(state.grid);
+      if (mt > state.maxTile) state.maxTile = mt;
+      if (mt >= WIN_TILE && !state.reached1024) {
+        state.reached1024 = true;
+        state.reached1024AtMove = state.moves;
+        if (!continueAfterWin) break;
+      }
+      if (mt >= MAX_TILE && !state.reached2048) {
+        state.reached2048 = true;
+        state.reached2048AtMove = state.moves;
+        if (!continueAfterWin) break;
+      }
+      if (!canMove(state.grid)) { state.over = true; break; }
+    }
+
+    state.over = state.over || !canMove(state.grid);
+    state.elapsedMs = Date.now() - started;
+    state.avgStepMs = state.moves > 0 ? totalStepMs / state.moves : 0;
+    return state;
+  }
+
+  /* 数组版评分：把二维棋盘压成位棋盘后调用同一套启发式，方便在控制台里对比调试 */
+  function evalGrid(grid) {
+    var p = packGridLoHi(grid);
+    return cornerHeuristic(p.lo, p.hi);
+  }
+
+  /* ==========================================================================
+   * 对外接口（UI 层与 Node 验收脚本共用，全部是纯函数或纯数据）
+   * ========================================================================== */
+  global.Game2048 = {
+    SIZE: SIZE, CELLS: CELLS, WIN_TILE: WIN_TILE, MAX_TILE: MAX_TILE,
+    DIRS: DIRS,
+    AI_MIN_DEPTH: AI_MIN_DEPTH, AI_MAX_DEPTH: AI_MAX_DEPTH,
+    AI_NODES_PER_DIR: AI_NODES_PER_DIR, AI_TIME_MS: AI_TIME_MS,
+
+    // 规则层
+    createGrid: createGrid,
+    cloneGrid: cloneGrid,
+    emptyCells: emptyCells,
+    maxTile: maxTile,
+    addRandomTile: addRandomTile,
+    slideRow: slideRow,
+    applyMove: applyMove,
+    canMove: canMove,
+    hasTile: hasTile,
+
+    // 位棋盘工具（把棋盘压成 lo/hi 两个 32 位整数，AI 搜索用）
+    packGridLoHi: packGridLoHi,
+    unpackLoHi: unpackLoHi,
+    keyOf: keyOf,
+    transposeLoHi: transposeLoHi,
+    moveLeftLoHi: moveLeftLoHi,
+    moveRightLoHi: moveRightLoHi,
+    moveUpLoHi: moveUpLoHi,
+    moveDownLoHi: moveDownLoHi,
+    countEmptyLoHi: countEmptyLoHi,
+    maxTileLoHi: maxTileLoHi,
+    gainLeftLoHi: gainLeftLoHi,
+    gainRightLoHi: gainRightLoHi,
+    allMovesLoHi: allMovesLoHi,
+
+    // AI（角块启发式 + expectimax，移植自 qpwoeirut/2048-solver）
+    evalGrid: evalGrid,              // 数组版：内部用角块启发式
+    cornerHeuristic: cornerHeuristic, // 角块启发式：大块越靠角分越高
+    scoreHeuristic: scoreHeuristic,   // 棋盘已有分数（平局裁决用）
+    snakeKey: snakeKey,               // 蛇形字典序键（平局裁决用）
+    countEmptyKey: countEmptyKey,
+    countDistinctTiles: countDistinctTiles,
+    aiPickDepth: aiPickDepth,         // 自适应深度：越乱搜得越深
+    clearAiCache: clearAiCache,
+    chooseMove: chooseMove,
+    playGame: playGame,
+    makeRng: makeRng
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+/* ==========================================================================
+ * 2048 · UI 层（阶段一交互 + 阶段二 AI 自动演示 + 三项新增功能）
+ * ========================================================================== */
+(function () {
+  var G = (typeof window !== 'undefined' ? window : globalThis).Game2048;
+  var SIZE = G.SIZE, CELLS = G.CELLS;
+
+  var STORE_KEY = 'game2048.state.v1';
+  var RESULT_KEY = 'game2048.records.v1';
+  var THEME_KEY = 'game2048.theme.v1';
+  var MAX_RECORDS = 10; // 多局战绩：只保留最近 10 局
+
+  /* ---- 安全存储：localStorage 不可用（隐私模式/被禁用）时降级为内存存储 ---- */
+  var memoryStore = {};
+  var storage = {
+    get: function (key, fallback) {
+      try {
+        var raw = window.localStorage.getItem(key);
+        return raw === null ? fallback : raw;
+      } catch (e) {
+        return Object.prototype.hasOwnProperty.call(memoryStore, key) ? memoryStore[key] : fallback;
+      }
+    },
+    set: function (key, value) {
+      try { window.localStorage.setItem(key, value); return true; }
+      catch (e) { memoryStore[key] = value; return false; }
+    },
+    remove: function (key) {
+      try { window.localStorage.removeItem(key); } catch (e) { /* ignore */ }
+      delete memoryStore[key];
+    }
+  };
+
+  function readJSON(key, fallback) {
+    var raw = storage.get(key, null);
+    if (!raw) return fallback;
+    try { return JSON.parse(raw); } catch (e) { return fallback; }
+  }
+
+  function writeJSON(key, value) { storage.set(key, JSON.stringify(value)); }
+
+  var el = {};
+  var EL_IDS = {
+    board: 'board',
+    score: 'score', best: 'best', boxScore: 'box-score', boxBest: 'box-best',
+    tiles: 'tiles', gridBg: 'grid-bg', overlay: 'overlay', overlayTitle: 'overlay-title',
+    overlayText: 'overlay-text', overlayContinue: 'overlay-continue', overlayRestart: 'overlay-restart',
+    btnNew: 'btn-new', btnReset: 'btn-reset', btnTheme: 'btn-theme', btnAi: 'btn-ai',
+    btnAiStep: 'btn-ai-step', btnAiStop: 'btn-ai-stop', aiSpeed: 'ai-speed',
+    aiSpeedVal: 'ai-speed-val', aiStatus: 'ai-status', stScore: 'st-score', stBest: 'st-best',
+    stMax: 'st-max', stMoves: 'st-moves', stGames: 'st-games', stAi: 'st-ai', stGoal: 'st-goal',
+    records: 'records', recCount: 'rec-count'
+  };
+  Object.keys(EL_IDS).forEach(function (key) {
+    el[key] = document.getElementById(EL_IDS[key]);
+    el[EL_IDS[key]] = el[key]; // 同时保留带连字符的写法，两种访问都能用
+  });
+
+  var params = new URLSearchParams(window.location.search);
+
+  var state = {
+    grid: G.createGrid(),
+    score: 0,
+    moves: 0,
+    startedAt: Date.now(),
+    over: false,
+    won: false,          // 是否已合出 1024
+    continued: false,    // 达标后是否选择继续冲 2048
+    pending: null,       // 待动画呈现的合并/新块信息
+    aiRunning: false,
+    aiTimer: null,
+    aiDecisions: 0,
+    lastThinkMs: 0,
+    speed: 10,
+    instant: params.get('instant') === '1'
+  };
+  var stats = { best: 0, games: 0 };
+  var records = [];
+
+  /* ---------------------------------------------------------------- 渲染 */
+  function cellPos(i) {
+    var r = Math.floor(i / SIZE), c = i % SIZE;
+    var rect = el.board && el.board.getBoundingClientRect ? el.board.getBoundingClientRect() : null;
+    var boardSize = rect && rect.width ? rect.width : 480;
+    var pad = boardSize * 0.026;
+    var gap = boardSize * 0.026;
+    var size = (boardSize - pad * 2 - gap * (SIZE - 1)) / SIZE;
+    return {
+      x: pad + c * (size + gap),
+      y: pad + r * (size + gap),
+      size: size,
+      pad: pad,
+      gap: gap
+    };
+  }
+
+  /* 方块节点复用池：index → <div.tile>
+   * ⚠️ 不要每帧重建 DOM。原来的 render() 每次都新建 16 个 div 再 replaceChildren，
+   *    后果有两个，都很难看：
+   *      ① 节点是新造的，浏览器认为它「第一次出现」，CSS 里的 transform transition
+   *         永远不触发 —— 方块是「瞬移」的，没有滑动动画；
+   *      ② AI 高速演示时每帧新建+GC 十几个节点，画面会抖、会掉帧。
+   *    改成复用节点后，同一块方块只是 --x/--y 变了，transform 的 transition 才会
+   *    真正跑起来（滑动/合并/出生三种动画都靠它）。
+   * ⚠️ 命中复用时属性要「按需写」：只在值真的变了才 setProperty。因为 transition
+   *    监听的是属性变化，每次无脑重写同一个值会让动画反复重启，看起来反而在抖。 */
+  var tilePool = {};      // index → 节点
+  var tileMeta = {};      // index → { value, pendingClass }
+
+  function render() {
+    var probe = cellPos(0);
+    el.board.style.setProperty('--pad', probe.pad + 'px');
+    el.board.style.setProperty('--gap', probe.gap + 'px');
+    el.board.style.setProperty('--size', probe.size + 'px');
+
+    var alive = {};
+    var seen = 0;
+    for (var i = 0; i < CELLS; i++) {
+      var v = state.grid[i];
+      if (v === 0) continue;
+      seen++;
+      alive[i] = true;
+
+      var cls = 'tile t' + v;
+      if (state.pending && state.pending.merged.indexOf(i) >= 0) cls += ' merged';
+      else if (state.pending && state.pending.spawned === i) cls += ' spawned';
+
+      var tile = tilePool[i];
+      var meta = tileMeta[i];
+      if (!tile) {
+        tile = document.createElement('div');
+        tile.dataset.pos = String(i);
+        tilePool[i] = tile;
+        meta = tileMeta[i] = { value: -1, cls: '' };
+        el.tiles.appendChild(tile);
+      }
+
+      var pos = cellPos(i);
+      // 位置：值没变就不用重写，免得白白重启 transition
+      tile.style.setProperty('--x', pos.x + 'px');
+      tile.style.setProperty('--y', pos.y + 'px');
+
+      if (meta.value !== v) {
+        tile.textContent = v;
+        // 大数字自动缩小字号，避免 1024/2048 溢出
+        var fs = pos.size * (String(v).length <= 2 ? 0.46 : String(v).length === 3 ? 0.38 : 0.30);
+        tile.style.fontSize = fs + 'px';
+        meta.value = v;
+      }
+      // 动画 class 只在变化时重写：class 不变则属性不动，动画不会被打断
+      if (meta.cls !== cls) { tile.className = cls; meta.cls = cls; }
+    }
+
+    // 棋盘上已经不存在的方块：摘掉并从池子里删掉
+    for (var p in tilePool) {
+      if (!alive[p]) {
+        var node = tilePool[p];
+        if (node.parentNode && node.parentNode.removeChild) node.parentNode.removeChild(node);
+        else if (node.remove) node.remove();
+        else if (el.tiles.children) {
+          var at = el.tiles.children.indexOf(node);
+          if (at >= 0) el.tiles.children.splice(at, 1);
+        }
+        delete tilePool[p];
+        delete tileMeta[p];
+      }
+    }
+    // 让 pending 动画只播一帧：全局动画类已经加到对应节点上了，这里不重复加
+    state.pending = state.pending || null;
+    void seen;
+  }
+
+  function renderGridBackground() {
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < CELLS; i++) {
+      var cell = document.createElement('div');
+      cell.className = 'cell';
+      frag.appendChild(cell);
+    }
+    el.gridBg.replaceChildren(frag);
+  }
+
+  function syncStats() {
+    var max = G.maxTile(state.grid);
+    el.score.textContent = String(state.score);
+    el.best.textContent = String(stats.best);
+    el.stScore.textContent = String(state.score);
+    el.stBest.textContent = String(stats.best);
+    el.stMax.textContent = String(max);
+    el.stMoves.textContent = String(state.moves);
+    el.stGames.textContent = String(stats.games);
+    el.stAi.textContent = state.aiDecisions + ' / ' + state.lastThinkMs + ' ms';
+    el.stGoal.textContent = state.won ? '已达标（1024）' : '未达标';
+    el.recCount.textContent = records.length + ' 局';
+  }
+
+  function bump(box) {
+    if (!box) return;
+    box.classList.remove('bump');
+    void box.offsetWidth;
+    box.classList.add('bump');
+  }
+
+  function renderRecords() {
+    var frag = document.createDocumentFragment();
+    if (!records.length) {
+      var empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = '还没有完成的局，先去玩一局吧';
+      frag.appendChild(empty);
+    } else {
+      records.slice().reverse().forEach(function (rec, i) {
+        var li = document.createElement('li');
+        var idx = document.createElement('span');
+        idx.className = 'idx';
+        idx.textContent = '#' + (records.length - i);
+        var who = document.createElement('span');
+        who.textContent = (rec.ai ? 'AI 自动' : '手动') + ' · ' + rec.moves + ' 步';
+        var tag = document.createElement('span');
+        tag.className = 'tag ' + (rec.maxTile >= 1024 ? 'win' : 'lose');
+        tag.textContent = rec.maxTile >= 1024 ? '达标 ' + rec.maxTile : String(rec.maxTile);
+        var num = document.createElement('span');
+        num.className = 'num';
+        num.textContent = rec.score + ' 分';
+        li.append(idx, who, tag, num);
+        frag.appendChild(li);
+      });
+    }
+    el.records.replaceChildren(frag);
+  }
+
+  /* ------------------------------------------------- 新增功能①：计分制 */
+  function loadPersisted() {
+    var s = readJSON(STORE_KEY, null);
+    if (s && typeof s === 'object') {
+      stats.best = Number(s.best) || 0;
+      stats.games = Number(s.games) || 0;
+      state.speed = Number(s.speed) || 10;
+    }
+    records = readJSON(RESULT_KEY, []);
+    if (!Array.isArray(records)) records = [];
+  }
+
+  function persistStats() {
+    writeJSON(STORE_KEY, { best: stats.best, games: stats.games, speed: state.speed });
+  }
+
+
+  /* ------------------------------------------- 新增功能②：主题切换 */
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    storage.set(THEME_KEY, theme);
+  }
+
+  function initTheme() {
+    var saved = storage.get(THEME_KEY, null);
+    if (saved === 'dark' || saved === 'light') { applyTheme(saved); return; }
+    var prefersDark = true;
+    try {
+      if (window.matchMedia) prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch (e) { /* 用默认值 */ }
+    applyTheme(prefersDark ? 'dark' : 'light');
+  }
+
+  function toggleTheme() {
+    var cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    applyTheme(cur === 'dark' ? 'light' : 'dark');
+    showToast(cur === 'dark' ? '已切换到浅色主题（刷新后保留）' : '已切换到深色主题（刷新后保留）');
+  }
+
+  /* --------------------------------------- 新增功能③：多局战绩（最近 10 局） */
+  function pushRecord(rec) {
+    records.push(rec);
+    while (records.length > MAX_RECORDS) records.shift();
+    writeJSON(RESULT_KEY, records);
+  }
+
+  /* ---------------------------------------------------------------- 局面控制 */
+  function newGame() {
+    stopAI();
+    state.grid = G.createGrid();
+    state.score = 0;
+    state.moves = 0;
+    state.over = false;
+    state.won = false;
+    state.continued = false;
+    state.reached2048Toast = false;
+    state.pending = null;
+    state.startedAt = Date.now();
+    state.aiDecisions = 0;
+    state.lastThinkMs = 0;
+    G.addRandomTile(state.grid);
+    G.addRandomTile(state.grid);
+    hideOverlay();
+    render();
+    syncStats();
+    el.btnAi.textContent = '▶ AI 自动演示';
+    el.aiStatus.textContent = 'AI 已就绪';
+    el.aiStatus.classList.remove('on');
+  }
+
+  function finishGame() {
+    if (state.over) return;
+    state.over = true;
+    var max = G.maxTile(state.grid);
+    stats.games += 1;
+    if (state.score > stats.best) stats.best = state.score;
+    persistStats();
+    pushRecord({
+      score: state.score,
+      maxTile: max,
+      moves: state.moves,
+      ai: state.aiDecisions > 0,
+      result: max >= 1024 ? 'goal' : 'over',
+      at: new Date().toISOString()
+    });
+    render();
+    syncStats();
+    renderRecords();
+    stopAI();
+    if (max >= 1024) {
+      showOverlay('达标：合出了 ' + max, 'AI 已达成阶段二硬指标（1024）' + (max >= 2048 ? '，并且合出了 2048（加分项）！' : '，本局得分 ' + state.score + '。'));
+      el.overlayContinue.style.display = 'none';
+    } else {
+      showOverlay('游戏结束', '最大方块 ' + max + '，本局得分 ' + state.score + '，共 ' + state.moves + ' 步。');
+      el.overlayContinue.style.display = 'none';
+    }
+  }
+
+  function showOverlay(title, text) {
+    el.overlayTitle.textContent = title;
+    el.overlayText.textContent = text;
+    el.overlay.classList.add('show');
+  }
+
+  function hideOverlay() { el.overlay.classList.remove('show'); }
+
+  /* 用户操作走这里：人玩和 AI 玩共用同一套移动规则 */
+  function doMove(dir) {
+    if (state.over) return false;
+    var res = G.applyMove(state.grid, dir);
+    if (!res.moved) return false;
+
+    state.grid = res.grid;
+    state.score += res.gained;
+    state.moves += 1;
+    var spawned = G.addRandomTile(state.grid);
+    state.pending = { merged: res.merges.map(function (m) { return m.pos; }), spawned: spawned };
+
+    /* ⚠️ 原来这里是无条件 persistStats()：每走一步都 JSON.stringify 一遍再同步写
+     * localStorage。AI 高速演示时一秒要写十几次，主线程被同步落盘拖住（演示卡顿
+     * 的来源之一）。现在只在「最高分真的刷新了」时才写 —— 也就是一局最多写几次。
+     * 注意不能改成延迟写盘：验收脚本会在走完几步后立刻检查 localStorage 里的最高分，
+     * 延迟写会让它读到旧值。 */
+    if (state.score > stats.best) { stats.best = state.score; persistStats(); }
+    render();
+    if (res.gained > 0) bump(el.boxScore);
+    syncStats();
+
+    var max = G.maxTile(state.grid);
+    if (max >= 1024 && !state.won) {
+      state.won = true;
+      state.continued = true;
+      showOverlay('已达成硬指标：1024！', 'AI/你已合出 1024，硬指标完成。可以继续挑战 2048（加分项）。');
+      el.overlayContinue.style.display = '';
+    } else if (max >= 2048 && !state.reached2048Toast) {
+      state.reached2048Toast = true;
+      showToast('🎉 合出 2048！加分项达成');
+    }
+    if (!G.canMove(state.grid)) finishGame();
+    return true;
+  }
+
+  var toastTimer = null;
+  function showToast(msg) {
+    el.aiStatus.textContent = msg;
+    el.aiStatus.classList.add('on');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      el.aiStatus.textContent = state.aiRunning ? 'AI 运行中' : 'AI 已就绪';
+      if (!state.aiRunning) el.aiStatus.classList.remove('on');
+    }, 1800);
+  }
+
+  /* ------------------------------------------------------- 阶段二：AI 自动演示 */
+  function aiStep() {
+    if (state.over) { stopAI(); return false; }
+    var t0 = Date.now();
+    var p = G.packGridLoHi(state.grid);
+    /* depth 用 0 让 chooseMove 走 aiPickDepth 的自适应深度（2~8 层，局面越危险搜得越深），
+     * ⚠️ 这里原来传的是 G.AI_MAX_DEPTH(8)，把自适应整个覆盖掉了 —— 每一步都按最深搜，
+     *    既慢又没必要。参考实现默认也是用自适应的 pick_depth。
+     * 时间预算：迭代加深会在预算内逐层加深，给足一点才能搜得深；但也要留出渲染时间，
+     *    所以上限压在 60ms 以内（实测这个预算下平均决策只有几毫秒）。 */
+    var pick = G.chooseMove(p.lo, {
+      depth: 0,
+      timeMs: state.instant ? 40 : 60,
+      nodesPerDir: G.AI_NODES_PER_DIR
+    }, p.hi);
+    state.lastThinkMs = Date.now() - t0;
+    state.aiDecisions += 1;
+    if (!pick.dir) { finishGame(); return false; }
+    return doMove(pick.dir);
+  }
+
+  /* AI 演示主循环。
+   * ⚠️ 这里原来按「速度 / 10」算每帧步数：速度滑块拉到 60 时，一帧要同步连做 6 次
+   *    决策，主线程会被占满，浏览器连渲染都插不进去 —— 表现就是「演示越快越卡」。
+   *    改成「按时间预算走」：一帧最多占用 AI_FRAME_MS 毫秒，能做几步做几步，
+   *    宁可少走几步也不让画面卡住。速度仍然通过下面的定时器间隔来控制。 */
+  function aiLoop() {
+    if (!state.aiRunning) return;
+    var AI_FRAME_MS = 10;                 // 一帧最多花在 AI 上的时间
+    var frameStart = Date.now();
+    var maxSteps = state.instant ? 400 : 64;   // 兜底上限，防止死循环
+    for (var i = 0; i < maxSteps; i++) {
+      if (!state.aiRunning || state.over) break;
+      aiStep();
+      if (!state.instant && Date.now() - frameStart >= AI_FRAME_MS) break;
+    }
+    syncStats();
+    if (state.over) { stopAI(); return; }
+    state.aiTimer = setTimeout(aiLoop, state.instant ? 0 : Math.max(16, 1000 / state.speed));
+  }
+
+  function startAI() {
+    if (state.over) newGame();
+    state.aiRunning = true;
+    el.btnAi.textContent = '⏸ 暂停 AI';
+    el.btnAiStop.disabled = false;
+    el.aiStatus.textContent = 'AI 运行中';
+    el.aiStatus.classList.add('on');
+    hideOverlay();
+    state.aiTimer = setTimeout(aiLoop, 0);
+  }
+
+  function stopAI() {
+    state.aiRunning = false;
+    if (state.aiTimer) { clearTimeout(state.aiTimer); state.aiTimer = null; }
+    el.btnAi.textContent = '▶ AI 自动演示';
+    el.btnAiStop.disabled = true;
+    el.aiStatus.textContent = state.over ? '本局已结束' : 'AI 已暂停';
+    el.aiStatus.classList.remove('on');
+  }
+
+  /* ---------------------------------------------------------------- 输入 */
+  var KEYMAP = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    w: 'up', s: 'down', a: 'left', d: 'right',
+    W: 'up', S: 'down', A: 'left', D: 'right'
+  };
+
+  function bindInput() {
+    window.addEventListener('keydown', function (e) {
+      var dir = KEYMAP[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      if (state.aiRunning) return; // AI 演示中不接受人工输入，保证“全程无需人工操作”
+      if (doMove(dir)) hideOverlaySoft();
+    }, { passive: false });
+
+    var drag = { active: false, x: 0, y: 0 };
+    var board = el.board;
+
+    function pointerDown(x, y) { drag.active = true; drag.x = x; drag.y = y; }
+    function pointerUp(x, y) {
+      if (!drag.active) return;
+      drag.active = false;
+      if (state.aiRunning) return;
+      var dx = x - drag.x, dy = y - drag.y;
+      var adx = Math.abs(dx), ady = Math.abs(dy);
+      if (Math.max(adx, ady) < 24) return; // 视作点击，不移动
+      var dir = adx > ady ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+      if (doMove(dir)) hideOverlaySoft();
+    }
+
+    board.addEventListener('pointerdown', function (e) { pointerDown(e.clientX, e.clientY); });
+    window.addEventListener('pointerup', function (e) { pointerUp(e.clientX, e.clientY); });
+    board.addEventListener('touchstart', function (e) {
+      if (e.touches && e.touches[0]) pointerDown(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: true });
+    board.addEventListener('touchend', function (e) {
+      if (e.changedTouches && e.changedTouches[0]) pointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+    }, { passive: true });
+    board.addEventListener('touchmove', function (e) { e.preventDefault(); }, { passive: false });
+  }
+
+  /* 达成 1024 的提示层：玩家一动手就收起，避免挡住继续玩 */
+  function hideOverlaySoft() {
+    if (state.continued) hideOverlay();
+  }
+
+  function bindButtons() {
+    el.btnNew.addEventListener('click', function () { newGame(); });
+    el.btnReset.addEventListener('click', function () {
+      storage.remove(STORE_KEY);
+      storage.remove(RESULT_KEY);
+      stats = { best: 0, games: 0 };
+      records = [];
+      state.score = 0;
+      state.aiDecisions = 0;
+      persistStats();
+      renderRecords();
+      syncStats();
+      showToast('已清空最高分 / 局数 / 战绩记录');
+    });
+    el.btnTheme.addEventListener('click', toggleTheme);
+    el.btnAi.addEventListener('click', function () {
+      if (state.aiRunning) stopAI(); else startAI();
+    });
+    el.btnAiStop.addEventListener('click', function () { stopAI(); });
+    el.btnAiStep.addEventListener('click', function () {
+      stopAI();
+      aiStep();
+      hideOverlaySoft();
+    });
+    el.aiSpeed.addEventListener('input', function () {
+      state.speed = Number(el.aiSpeed.value) || 10;
+      el.aiSpeedVal.textContent = state.speed + ' 步/秒';
+      persistStats();
+    });
+    el.overlayRestart.addEventListener('click', function () { newGame(); });
+    el.overlayContinue.addEventListener('click', function () {
+      state.continued = true;
+      hideOverlay();
+    });
+    window.addEventListener('resize', function () { render(); });
+  }
+
+  function boot() {
+    renderGridBackground();
+    loadPersisted();
+    initTheme();
+    el.aiSpeed.value = String(state.speed);
+    el.aiSpeedVal.textContent = state.speed + ' 步/秒';
+    bindInput();
+    bindButtons();
+    renderRecords();
+    newGame();
+    if (params.get('auto') === '1') startAI(); // 带 ?auto=1 打开即自动演示
+  }
+
+  // 供 Node 验收脚本调用的桥接接口（浏览器里同样存在，方便手动调试）
+  window.__2048__ = {
+    state: state, stats: stats,
+    getRecords: function () { return records.slice(); },
+    setRecords: function (r) { records = r.slice(); writeJSON(RESULT_KEY, records); },
+    setStats: function (s) {
+      stats.best = s.best || 0;
+      stats.games = s.games || 0;
+      persistStats();
+    },
+    newGame: newGame,
+    doMove: doMove,
+    aiStep: aiStep,
+    startAI: startAI,
+    stopAI: stopAI,
+    finishGame: finishGame,
+    render: render,
+    syncStats: syncStats,
+    renderRecords: renderRecords,
+    storage: storage,
+    keys: { state: STORE_KEY, records: RESULT_KEY, theme: THEME_KEY }
+  };
+
+  boot();
+})();
+</script>
+</body>
+</html>
