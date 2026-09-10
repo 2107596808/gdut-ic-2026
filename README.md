@@ -74,14 +74,14 @@ python profile/make_pdf.py
 
 ---
 
-## 环境准备
+## 我的开发环境
+
+把这次用到的环境和搭建过程记在这里，以后换机器照着走一遍就行。
 
 ### 1. GitHub 账号和仓库
 
-1. 到 <https://github.com/signup> 注册。
-2. 右上角 `+` → New repository，可见性选 **Public**（私有仓库别人打不开），
-   勾上 Add a README file，创建。
-3. 把本地代码推上去：
+账号 `2107596808`，仓库 <https://github.com/2107596808/gdut-ic-2026>，可见性选的 **Public**
+（私有仓库别人打不开）。建好之后把本地代码推上去：
 
 ```bash
 git remote add origin https://github.com/2107596808/gdut-ic-2026.git
@@ -91,7 +91,7 @@ git push -u origin main
 
 ### 2. Git
 
-Windows 装 <https://git-scm.com/download/win>。装完设置身份：
+Windows 版装的是 <https://git-scm.com/download/win>，装完设置身份：
 
 ```bash
 git config --global user.name "邵钜权"
@@ -100,8 +100,8 @@ git config --global user.email "2107596808@qq.com"
 
 ### 3. AI 编程工具
 
-我用的命令行 AI 编程助手。任务书说品牌不限，DeepSeek Harness、Codex、ZCode 都可以，
-我用的是其中的命令行工具。
+命令行 AI 编程助手（任务书说品牌不限：DeepSeek Harness、Codex、ZCode 等都可以，我用的
+是其中的命令行工具）。
 
 ### 4. 编辑器
 
@@ -117,10 +117,9 @@ VS Code（<https://code.visualstudio.com/>）。
 
 ### 提交前的检查清单
 
-- [x] 注册 GitHub 账号（用户名 `2107596808`）
+- [x] 注册 GitHub 账号并建好仓库：<https://github.com/2107596808/gdut-ic-2026>
 - [ ] **开启两步验证**：Settings → Password and authentication → Two-factor authentication
-- [x] 新建仓库：<https://github.com/2107596808/gdut-ic-2026>
-- [x] 把代码推上去（`main` 分支）
+- [x] 代码推到 `main` 分支
 - [x] 打开 GitHub Pages（Source = `main` + `/docs`）→ <https://2107596808.github.io/gdut-ic-2026/>
 - [ ] 截止前把仓库链接交到群里的收集表
 
@@ -458,7 +457,7 @@ python game/tests/verify_static.py   # 单文件 / 无外链 / 功能点齐全
 
 这些信息散落在 `profile/make_pdf.py` 的 `PROFILE` 字典、`docs/index.html`、本文件顶部、
 `LICENSE` 和 `game/index.html` 的文件头注释里，五处内容保持一致。
-改完信息后 PDF 重新生成一次即可（脚本会顺手复制一份到 `docs/`）：
+改完信息后重新生成一次 PDF 即可（脚本会顺手复制一份到 `docs/`）：
 
 ```bash
 pip install reportlab
