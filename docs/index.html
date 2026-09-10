@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>邵钜权 · 个人主页</title>
-<meta name="description" content="邵钜权的个人主页：专业、兴趣、项目与联系方式">
+<meta name="description" content="邵钜权（广东工业大学 集成电路学院）的个人主页：专业、兴趣、项目与联系方式">
 <!--
   个人主页（GitHub Pages 站点首页）
   ============================================================================
@@ -218,7 +218,7 @@
     <div class="avatar">邵</div>
     <div class="who">
       <h1>邵钜权</h1>
-      <p>集成电路与集成系统 1 班·广东工业大学 集成电路学院</p>
+      <p>集成电路与集成系统 1 班 · 广东工业大学 集成电路学院</p>
     </div>
   </header>
 
@@ -259,10 +259,11 @@
       <div class="tags">
         <span class="tag">Python</span>
         <span class="tag">JavaScript</span>
+        <span class="tag">HTML / CSS</span>
         <span class="tag">Git</span>
         <span class="tag">VS Code</span>
-        <span class="tag">Linux 命令行</span>
-        <span class="tag">PySpice</span>
+        <span class="tag">Linux 命令行（WSL）</span>
+        <span class="tag">PySpice + ngspice</span>
         <span class="tag">AI 编程工具</span>
       </div>
       <p style="margin-top:12px">正在学：Verilog 与数字电路设计、集成电路设计与仿真流程。</p>
@@ -282,8 +283,10 @@
         搜索用 expectimax，随机落子回合对每个空格按 90% 出 2 / 10% 出 4 做全宽期望，
         深度随局面自适应。为了让搜索够快，整个棋盘被压成两个 32 位整数的位棋盘。
       </p>
-      <p><strong>实测结果</strong>：固定 10 个种子各跑一整局（全程无人工），
-        合出 1024 与 2048 的达成率都是 39/40 = 98%，其中 31 局合出 4096、4 局合出 8192；平均 2973 步、单次决策 1.1 ms。</p>
+      <p><strong>实测结果</strong>：固定 40 个种子各跑一整局（全程无人工），
+        合出 1024 与 2048 的达成率都是 <strong>39/40 = 98%</strong>，其中 31 局合出 4096、4 局合出 8192；
+        平均 2973 步、单次决策 1.1 ms。再往上还设了四档「AI 棋力」，
+        最高档（固定 5 层）4 局全部合出 8192、平均 160908 分。</p>
       <div class="links">
         <!-- GitHub Pages 只发布 docs/ 目录，所以这里必须写完整网址（不能写 ../game/） -->
         <a class="btn primary" href="https://2107596808.github.io/gdut-ic-2026/game/index.html">▶ 现在就玩（含 AI 演示）</a>
@@ -292,13 +295,16 @@
     </div>
 
     <div class="project">
-      <h3>PySpice 三个电路（RC 低通 / 戴维南验证 / NMOS 共源放大）</h3>
-      <div class="meta">Python · PySpice · ngspice</div>
+      <h3>PySpice 三个电路：RC 低通 / 戴维南验证 / NMOS 共源放大</h3>
+      <div class="meta">Python · PySpice · ngspice（WSL 实跑）</div>
       <p>
-        
-        例如：RC 低通滤波（τ=100 µs / fc≈1591.5 Hz）、戴维南定理验证（V_th=9 V、R_th=3 kΩ）、
-        NMOS 共源放大电路（I_D=0.8 mA、V_DS=3.4 V、|Av|≈3.10），三个电路都写了公式推导与对比表。
+        三个电路都用 PySpice + ngspice 真跑出数据，不是估算：
+        RC 低通（τ = 100 µs、fc ≈ 1591.5 Hz，附方波瞬态响应与波特图）、
+        戴维南定理验证（V_oc = 9 V、I_sc = 3 mA、R_th = 3 kΩ，等效替换后接负载的电压/电流误差 &lt; 0.01%）、
+        NMOS 共源放大（V_GS = 2 V、I_D = 0.8 mA、V_DS = 3.4 V 判为饱和区、|Av| ≈ 3.10 且输出反相）。
       </p>
+      <p><strong>每个电路都是「电路图 + 公式推导 + 仿真波形 + 手算 vs 仿真对比表」四件套</strong>，
+        两边对不上的地方都逐项解释了来源（例如 NMOS 的 I_D 差 7%，是题卡简化式与 SPICE 含 λ 完整模型的固有差别）。</p>
       <div class="links">
         <a class="btn" href="https://github.com/2107596808/gdut-ic-2026/tree/main/circuits">看看代码</a>
       </div>

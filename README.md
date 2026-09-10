@@ -62,11 +62,9 @@ python profile/make_pdf.py
 │   ├─ make_pdf.py        生成脚本（内容都在顶部的 PROFILE 字典里）
 │   └─ 个人简介.pdf
 │
-└─ docs/                  GitHub Pages 的发布目录（Pages 只发布这棵子树）
+└─ docs/                  GitHub Pages 的发布目录
     ├─ index.html         个人主页
-    ├─ 个人简介.pdf        主页上下载用的副本
-    └─ game/
-        └─ index.html     游戏的发布副本（与 game/index.html 逐字节一致，验收脚本会检查）
+    └─ 个人简介.pdf        主页上下载用的副本
 ```
 
 网站之所以放 `docs/`，是因为 GitHub Pages 可以直接把「main 分支的 `/docs` 目录」设为发布源，
@@ -74,14 +72,14 @@ python profile/make_pdf.py
 
 ---
 
-## 我的开发环境
-
-把这次用到的环境和搭建过程记在这里，以后换机器照着走一遍就行。
+## 环境准备
 
 ### 1. GitHub 账号和仓库
 
-账号 `2107596808`，仓库 <https://github.com/2107596808/gdut-ic-2026>，可见性选的 **Public**
-（私有仓库别人打不开）。建好之后把本地代码推上去：
+1. 到 <https://github.com/signup> 注册。
+2. 右上角 `+` → New repository，可见性选 **Public**（私有仓库别人打不开），
+   勾上 Add a README file，创建。
+3. 把本地代码推上去：
 
 ```bash
 git remote add origin https://github.com/2107596808/gdut-ic-2026.git
@@ -91,7 +89,7 @@ git push -u origin main
 
 ### 2. Git
 
-Windows 版装的是 <https://git-scm.com/download/win>，装完设置身份：
+Windows 装 <https://git-scm.com/download/win>。装完设置身份：
 
 ```bash
 git config --global user.name "邵钜权"
@@ -100,8 +98,8 @@ git config --global user.email "2107596808@qq.com"
 
 ### 3. AI 编程工具
 
-命令行 AI 编程助手（任务书说品牌不限：DeepSeek Harness、Codex、ZCode 等都可以，我用的
-是其中的命令行工具）。
+我用的命令行 AI 编程助手。任务书说品牌不限，DeepSeek Harness、Codex、ZCode 都可以，
+我用的是其中的命令行工具。
 
 ### 4. 编辑器
 
@@ -117,10 +115,11 @@ VS Code（<https://code.visualstudio.com/>）。
 
 ### 提交前的检查清单
 
-- [x] 注册 GitHub 账号并建好仓库：<https://github.com/2107596808/gdut-ic-2026>
+- [x] 注册 GitHub 账号（用户名 `2107596808`）
 - [ ] **开启两步验证**：Settings → Password and authentication → Two-factor authentication
-- [x] 代码推到 `main` 分支
-- [x] 打开 GitHub Pages（Source = `main` + `/docs`）→ <https://2107596808.github.io/gdut-ic-2026/>
+- [x] 新建仓库：<https://github.com/2107596808/gdut-ic-2026>
+- [ ] 把代码推上去
+- [ ] 打开 GitHub Pages（见下一节）
 - [ ] 截止前把仓库链接交到群里的收集表
 
 ---
@@ -155,21 +154,8 @@ https://2107596808.github.io/gdut-ic-2026/
 三处链接都已经改成真实网址了：`docs/index.html` 里「现在就玩」按钮指向的
 `.../game/index.html`、页面里的 GitHub 链接、以及本 README 顶部的主页链接。
 
-⚠️ **关键细节：Pages 只发布 `docs/` 这棵子树，所以游戏必须在 `docs/game/` 里也放一份**，
-线上的「现在就玩」按钮才打得开。改完 `game/index.html` 记得同步一次：
-
-```bash
-cp game/index.html docs/game/index.html        # PowerShell: Copy-Item game/index.html docs/game/index.html -Force
-```
-
-> 这里踩过一个坑，而且**我第一版的修法是错的**，值得写下来：
-> 主页里「现在就玩」原来写相对路径 `../game/index.html`，线上 404。
-> 我当时判断是「相对路径出不去 `docs/` 目录」，于是改成完整网址
-> `https://2107596808.github.io/gdut-ic-2026/game/index.html` —— **照样 404**。
-> 真正的原因是：Pages 的发布源是 `/docs`，**仓库根的 `/game/` 根本不在发布范围内**，
-> 写相对路径还是绝对网址都没用。
-> 正确修法是给游戏放一份发布副本 `docs/game/index.html`，并在 `verify_static.py` 里
-> 加一条「两份必须逐字节一致」的断言，防止以后改了游戏忘了同步。
+> 这里踩过一个坑：GitHub Pages **只发布 `docs/` 目录**，所以主页里写 `../game/index.html`
+> 这种相对路径在线上会 404，必须写完整网址。
 
 ---
 
@@ -457,7 +443,7 @@ python game/tests/verify_static.py   # 单文件 / 无外链 / 功能点齐全
 
 这些信息散落在 `profile/make_pdf.py` 的 `PROFILE` 字典、`docs/index.html`、本文件顶部、
 `LICENSE` 和 `game/index.html` 的文件头注释里，五处内容保持一致。
-改完信息后重新生成一次 PDF 即可（脚本会顺手复制一份到 `docs/`）：
+改完信息后 PDF 重新生成一次即可（脚本会顺手复制一份到 `docs/`）：
 
 ```bash
 pip install reportlab

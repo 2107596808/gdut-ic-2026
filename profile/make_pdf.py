@@ -19,6 +19,17 @@
 import os
 import sys
 
+# ---------------------------------------------------------------- 控制台编码
+# ⚠️ 中文 Windows 控制台默认是 GBK，而本脚本要打印 ✓ / ✗ / 表格边框等字符，
+#   GBK 里没有这些码位，Python 会直接抛 UnicodeEncodeError 让脚本崩溃。
+#   在任何 print 之前把 stdout/stderr 切成 UTF-8，并允许无法编码的字符被替换，
+#   保证「打印日志」这个动作本身永远不会让脚本失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # 流被重定向到不支持 reconfigure 的对象时忽略
+
 # ============================================================ 在这里改信息
 PROFILE = {
     "name": "邵钜权",
@@ -36,15 +47,21 @@ PROFILE = {
     ],
     "skills": [
         ("编程语言", "Python / JavaScript"),
-        ("工具", "Git、VS Code、Linux 命令行、AI 编程工具（DeepSeek Harness / Codex）"),
+        ("工具", "Git、VS Code、Linux 命令行（WSL）、PySpice + ngspice、AI 编程工具"),
         ("正在学", "Verilog 与数字电路设计、集成电路设计与仿真流程"),
     ],
     "projects": [
         ("2048 游戏 + AI 自动求解",
-         "纯前端单文件实现，阶段一可自由操作，阶段二用「角块启发式 + expectimax」自动演示，"
-         "实测能稳定合出 1024 方块。仓库中附了完整的提示词迭代记录。"),
+         "纯前端单文件实现：阶段一可自由操作（键盘 / 鼠标拖拽 / 触屏，含计分制、主题切换、多局战绩），"
+         "阶段二用「角块启发式 + expectimax」自动演示。40 局固定种子实测：合出 1024 与 2048 的达成率均为 "
+         "39/40 = 98%，其中 31 局合出 4096、4 局合出 8192；再往上设了四档「AI 棋力」，"
+         "最高档（固定 5 层）4 局全部合出 8192、平均 160908 分。仓库附完整的提示词迭代记录与 77 项自动验收断言。"),
         ("PySpice 三个电路（RC 低通 / 戴维南验证 / NMOS 共源放大）",
-         "用 PySpice + ngspice 在 WSL 里实跑，数据不是估算的：RC 低通的 τ = 100 µs、fc ≈ 1591.5 Hz，并给出方波瞬态响应与波特图；戴维南定理验证出 V_oc = 9 V、I_sc = 3 mA、R_th = 3 kΩ，等效电路替换后接负载的电压/电流误差 < 0.01%；NMOS 共源放大算出 V_GS = 2 V、I_D = 0.8 mA、V_DS = 3.4 V（工作在饱和区）、|Av| ≈ 3.10 且输出反相。"),
+         "用 PySpice + ngspice 在 WSL 里实跑，数据不是估算的：RC 低通的 τ = 100 µs、fc ≈ 1591.5 Hz，"
+         "并给出方波瞬态响应与波特图；戴维南定理验证出 V_oc = 9 V、I_sc = 3 mA、R_th = 3 kΩ，"
+         "等效电路替换后接负载的电压/电流误差 < 0.01%；NMOS 共源放大算出 V_GS = 2 V、I_D = 0.8 mA、"
+         "V_DS = 3.4 V（工作在饱和区）、|Av| ≈ 3.10 且输出反相。每个电路都是"
+         "「自己画的电路图 + 公式推导 + 仿真波形 + 手算 vs 仿真对比表」四件套。"),
     ],
     "about": (
         "我是邵钜权，广东工业大学集成电路学院集成电路与集成系统专业的大一新生。"
@@ -76,15 +93,26 @@ def find_fonts():
 
 
 def build_pdf(output_path):
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_JUSTIFY
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
-                                    Spacer, Table, TableStyle)
+    # ⚠️ reportlab 缺了要给友好提示，不能让它冒 ModuleNotFoundError 的裸 traceback：
+    #   另外两个电路脚本遇到缺依赖都是「给出安装命令然后正常退出」，
+    #   这里保持一致，免得评审第一次跑就看见一堆红字。
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_JUSTIFY
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                        Spacer, Table, TableStyle)
+    except ModuleNotFoundError:
+        print("\n[缺少依赖] 生成 PDF 需要 reportlab，请先安装：\n")
+        print("    pip install reportlab\n")
+        print("（个人简介 PDF 是任务书要求的交付物之一；")
+        print("  仓库里已经放了一份生成好的 profile/个人简介.pdf，")
+        print("  只有在你要改内容重新生成时才需要装这个依赖。）")
+        return False
 
     regular, bold = find_fonts()
     if regular:
@@ -185,12 +213,18 @@ def main():
     print("生成个人简介 PDF")
     print("=" * 60)
     ok = build_pdf(output)
+    # ⚠️ build_pdf 返回 False 表示「没能生成」，这时再往下走就会报「已生成 xx KB」
+    #    —— 文件根本不存在，os.path.getsize 会抛异常，或者（更糟）读到上一次的旧文件，
+    #    打印出「已生成」的假成功。所以这里必须先判断、先退出。
+    if not ok:
+        print("\n  ✗ 生成失败：请先按上面的提示补齐依赖，再重新运行。")
+        return 1
     size = os.path.getsize(output)
     print(f"  ✓ 已生成 {output}（{size / 1024:.1f} KB）")
     copied = publish_to_docs(output)
     if copied:
         print(f"  ✓ 已复制到 {copied}（供个人主页的“下载个人简介 PDF”按钮使用）")
-    if not ok:
+    if not find_fonts()[0]:
         print("  ! 中文字体没找到，中文可能显示异常，请检查字体路径。")
         return 1
     return 0
