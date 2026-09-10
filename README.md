@@ -62,9 +62,11 @@ python profile/make_pdf.py
 │   ├─ make_pdf.py        生成脚本（内容都在顶部的 PROFILE 字典里）
 │   └─ 个人简介.pdf
 │
-└─ docs/                  GitHub Pages 的发布目录
+└─ docs/                  GitHub Pages 的发布目录（Pages 只发布这棵子树）
     ├─ index.html         个人主页
-    └─ 个人简介.pdf        主页上下载用的副本
+    ├─ 个人简介.pdf        主页上下载用的副本
+    └─ game/
+        └─ index.html     游戏的发布副本（与 game/index.html 逐字节一致，验收脚本会检查）
 ```
 
 网站之所以放 `docs/`，是因为 GitHub Pages 可以直接把「main 分支的 `/docs` 目录」设为发布源，
@@ -154,8 +156,21 @@ https://2107596808.github.io/gdut-ic-2026/
 三处链接都已经改成真实网址了：`docs/index.html` 里「现在就玩」按钮指向的
 `.../game/index.html`、页面里的 GitHub 链接、以及本 README 顶部的主页链接。
 
-> 这里踩过一个坑：GitHub Pages **只发布 `docs/` 目录**，所以主页里写 `../game/index.html`
-> 这种相对路径在线上会 404，必须写完整网址。
+⚠️ **关键细节：Pages 只发布 `docs/` 这棵子树，所以游戏必须在 `docs/game/` 里也放一份**，
+线上的「现在就玩」按钮才打得开。改完 `game/index.html` 记得同步一次：
+
+```bash
+cp game/index.html docs/game/index.html        # PowerShell: Copy-Item game/index.html docs/game/index.html -Force
+```
+
+> 这里踩过一个坑，而且**我第一版的修法是错的**，值得写下来：
+> 主页里「现在就玩」原来写相对路径 `../game/index.html`，线上 404。
+> 我当时判断是「相对路径出不去 `docs/` 目录」，于是改成完整网址
+> `https://2107596808.github.io/gdut-ic-2026/game/index.html` —— **照样 404**。
+> 真正的原因是：Pages 的发布源是 `/docs`，**仓库根的 `/game/` 根本不在发布范围内**，
+> 写相对路径还是绝对网址都没用。
+> 正确修法是给游戏放一份发布副本 `docs/game/index.html`，并在 `verify_static.py` 里
+> 加一条「两份必须逐字节一致」的断言，防止以后改了游戏忘了同步。
 
 ---
 

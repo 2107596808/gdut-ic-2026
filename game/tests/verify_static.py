@@ -89,6 +89,20 @@ def main():
     check("代码里没有 import / require / process 等 Node API",
           not re.search(r"\b(require\s*\(|module\.exports|process\.env|__dirname)", code))
 
+    # ⚠️ GitHub Pages 的发布源是 /docs，只发布这棵子树：仓库根的 game/index.html
+    #    在线上**访问不到**（实测 https://<user>.github.io/<repo>/game/index.html → 404，
+    #    不管写相对路径还是完整网址都一样）。所以 docs/game/ 里必须有一份发布副本。
+    #    两份文件一旦不一致，线上跑的就是旧版本 —— 这条断言专门钉死这件事。
+    doc_copy = os.path.normpath(os.path.join(HERE, "..", "..", "docs", "game", "index.html"))
+    if os.path.exists(doc_copy):
+        with open(doc_copy, "rb") as f_copy, open(HTML_PATH, "rb") as f_src:
+            same = f_copy.read() == f_src.read()
+        check("docs/game/ 发布副本与 game/index.html 逐字节一致", same,
+              "" if same else "两份不一致：改完 game/index.html 要同步到 docs/game/")
+    else:
+        check("docs/game/ 发布副本存在", False,
+              "缺少 docs/game/index.html，线上「现在就玩」会 404")
+
     # ---------------- 2. HTML ↔ JS 的 id 契约 ----------------
     print("\n[2] HTML 与 JS 的元素 id 契约")
     id_in_html = set(re.findall(r"\bid=[\"']([^\"']+)[\"']", html))
