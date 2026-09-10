@@ -126,6 +126,14 @@ def main():
         "AI 单步决策": "aiStep" in source,
         "硬指标 1024 判定": "WIN_TILE" in source and "1024" in source,
         "演示速度可调": "ai-speed" in id_in_html or "aiSpeed" in source,
+        # 棋力和速度必须是两个独立控件：下拉框（ai-level ↔ aiLevel）存在，
+        # 且选项来自 AI_LEVELS 这一个数据源（不是散落写死的深度数字）。
+        "棋力档位可选且与速度解耦": (
+            "AI_LEVELS" in source
+            and ("ai-level" in id_in_html or "aiLevel" in source)
+            # 速度滑块不能再被用来算深度：老代码里那个 aiDepthCap() 里的 state.speed 判断必须已经消失
+            and "aiDepthCap" not in source
+        ),
     }
     for name, ok in stage2.items():
         check(f"阶段二 · {name}", ok)

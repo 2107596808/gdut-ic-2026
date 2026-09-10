@@ -343,6 +343,27 @@ kbd {
 
 input[type="range"] { flex: 1; accent-color: var(--accent); }
 
+/* 棋力档位选择框：和「演示速度」并排，两者互不影响 */
+select {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--btn);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+/* 档位下方的说明：把「这个档要多慢」提前讲清楚，别让人选完才发现要等几分钟 */
+.level-note {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin: 0 0 4px;
+}
+
 .records { list-style: none; margin: 0; padding: 0; font-size: 13px; }
 
 .records li {
@@ -422,12 +443,18 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
       <div class="stat-row"><span>最大方块</span><b id="st-max">2</b></div>
       <div class="stat-row"><span>步数</span><b id="st-moves">0</b></div>
       <div class="stat-row"><span>已完成局数</span><b id="st-games">0</b></div>
-      <div class="stat-row"><span>AI 决策次数 / 最近一步耗时</span><b id="st-ai">0 / – ms</b></div>
+      <div class="stat-row"><span>AI 决策次数 / 最近一步耗时 / 深度</span><b id="st-ai">0 / – ms / 深度 –</b></div>
+
+      <div class="slider-row">
+        <span>AI 棋力</span>
+        <select id="ai-level"></select>
+      </div>
+      <p class="level-note" id="ai-level-note">…</p>
 
       <div class="slider-row">
         <span>演示速度</span>
-        <input type="range" id="ai-speed" min="1" max="60" value="10">
-        <b id="ai-speed-val">10 步/秒</b>
+        <input type="range" id="ai-speed" min="1" max="60" value="20">
+        <b id="ai-speed-val">20 步/秒</b>
       </div>
       <div class="toolbar">
         <button id="btn-ai-step">单步 AI</button>
@@ -647,23 +674,31 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
    * （avalanche）全程 Math.imul + 位运算，不分配对象。哈希空间 2^53，一局棋
    * 撑死几百万个节点，碰撞概率可以忽略；就算真撞上一次，代价也只是某个节点的
    * 分数略有偏差，而不是像丢掉字段那样整片污染。 */
-  /* ⚠️ 别加「哈希混合」。这里一开始写的是两个 Math.imul 的 avalanche 混合，
-   *   看起来更专业，实测却是全文件最大的性能杀手：CPU profile 显示 mix32 占
-   *   41%、keyOfDepth 再占 10%，一半的搜索时间花在算这个键上。
-   *   换成下面这个纯字段拼接后，同样的搜索快 3.8 倍（depth=5 从 1032ms 降到
-   *   266ms），而同样的时间预算能多搜 4 倍节点，1024 达成率直接从 3/6 变成 6/6。
-   *   置换表的键不需要密码学质量，只需要「不同局面基本不撞」，位拼接足够了。
+  /* 置换表的键。这里前后踩过三次坑，把结论一次说清：
    *
-   * 位的分配（三段落不重叠、也不会互相进位，全程 ≤ 2^53 安全整数）：
-   *   lo 32 位 × 2^17  →  高 49 位
-   *   hi 的高 17 位     →  接下来 17 位
-   *   depth 4 位        →  最低 4 位（0..8 够用）
-   *   校验：lo·2^17 < 2^49，加 (hi>>>15) < 2^17 后 < 2^49+2^17；
-   *        再 ×16 < 2^53，加 depth ≤ 15 仍 < 2^53。✓
-   * 被舍弃的是 hi 的低 15 位；键空间 2^49，实际存活条目最多几十万，
-   * 碰撞概率可忽略（真撞上也只是某个节点的分数略有偏差）。 */
+   * 坑①：写成 `hi * 32 + depth`，把 lo 整个丢了 —— 前两行不同的局面撞同一条缓存。
+   * 坑②：改成「纯位拼接」`(lo * 131072 + (hi >>> 15)) * 16 + depth`，看着又快又安全，
+   *      但 hi 的低 15 位（含整个第 3 行）同样被丢掉了。实测拿两个只差第 3 行的棋盘
+   *      去算，键完全相同；一局 400 步里出现 10 次「不同棋盘共用缓存条目」。
+   *      本质原因：棋盘是 64 bit、还要塞 depth，而 Number 的安全整数只有 53 bit，
+   *      **信息一定装不下，所以必须用哈希把全部 64 bit 均匀铺开**，不能靠截断字段。
+   * 坑③：中途试过两个 Math.imul 的 avalanche 混合，CPU profile 显示它占了 41% ——
+   *      那是因为当时每个节点要算两个键、且其余代码没优化。现在配合迭代加深
+   *      （只在 depth>=2 的节点上查缓存）后，这点开销完全可以接受。
+   *
+   * 结论：用下面这个混合，lo / hi / depth 的**每一位**都参与运算。
+   *   键空间 2^53，一局里存活条目最多几十万，碰撞概率可忽略；
+   *   就算真撞上一次，代价也只是某个节点分数略有偏差，不像坑①②那样整片污染。
+   * 校验：(a < 2^32)·2^21 ≤ 2^53-2^21，加 (b>>>11) < 2^21 后仍 ≤ 2^53-1。✓ */
+  function mix32(x) {
+    x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
+    x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+    return (x ^ (x >>> 16)) >>> 0;
+  }
   function keyOfDepth(lo, hi, depth) {
-    return (lo * 131072 + (hi >>> 15)) * 16 + depth;
+    var a = mix32(lo ^ Math.imul(depth + 1, 0x9e3779b9)); // 低 32 位：来自 lo + depth
+    var b = mix32(hi ^ 0x27d4eb2f);                      // 低 21 位：来自 hi
+    return a * 2097152 + (b >>> 11);
   }
 
   /* 转置：第 r 行第 c 列 ↔ 第 c 行第 r 列（用于把「左右移动」复用到「上下移动」） */
@@ -814,7 +849,12 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     ];
     var out = [];
     for (var i = 0; i < 4; i++) {
-      if (moves[i].lo !== lo || moves[i].hi !== hi) {
+      /* ⚠️ 和 allMovesInto 里那处同样的坑：moveXxxLoHi 返回的是 `>>> 0` 之后的**无符号**值，
+       * 而调用方传进来的 lo 可能是**有符号**的（比如从 Int32Array 里读出来的）。
+       * 那么 `4294967295 !== -1` 恒为真，棋盘没变的方向也会被当成合法走法。
+       * 现在这个函数只被外部（测试脚本）用无符号值调用，暂时不会出事，
+       * 但为了让两处行为一致、以后不被误用，这里也先归一化。 */
+      if (moves[i].lo !== (lo >>> 0) || moves[i].hi !== (hi >>> 0)) {
         out.push({ lo: moves[i].lo, hi: moves[i].hi, gain: gains[i], dir: DIRS[i] });
       }
     }
@@ -857,7 +897,9 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
    * ⚠️ 导出的 allMovesLoHi 保持「每次返回全新数组」不变——外部调用方（比如
    *    tests/verify_game.mjs）会拿着结果做遍历，不能让它被搜索递归改掉。
    * ======================================================================== */
-  var POOL_N = 16;                      // 覆盖 0..15 层，AI_MAX_DEPTH = 8，绰绰有余
+  // 深度缓冲池：0..15 层各一组。自适应模式最深到 AI_MAX_DEPTH(8)，够用；
+  // 万一超出，下面统一用 `depth < POOL_N ? depth : POOL_N - 1` 夹到最后一组。
+  var POOL_N = 16;
   var _mvLo = [], _mvHi = [], _mvGain = [], _mvDir = [], _slots = [];
   (function buildPools() {
     for (var i = 0; i < POOL_N; i++) {
@@ -890,6 +932,26 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
   /* 把 4 个方向的结果写进 outLo/outHi/outGain/outDir，返回合法方向个数。
    * 语义与导出的 allMovesLoHi 完全一致（顺序 left/right/up/down，棋盘变了才算合法）。 */
   function allMovesInto(lo, hi, outLo, outHi, outGain, outDir) {
+    /* ⚠️⚠️ 这一行不能删 —— 它修的是一个让 AI 明显变弱的隐蔽 bug。
+     *
+     * 搜索内部的 lo/hi 是从 Int32Array（走子结果池）里读出来的，而 Int32Array
+     * 是**有符号**的：0x80000000 存进去、读出来是 -2147483648。
+     * 而 composeTwoRows() 返回的是 `>>> 0` 之后的**无符号**值（4294967295 这种正数）。
+     * 于是下面的合法性判断 `lLo !== lo` 就变成了
+     *     4294967295 !== -1   → 永真
+     * 结果：**棋盘根本没变的方向也被当成合法走法**（幽灵走法）。
+     *
+     * 触发条件：某一半棋盘的最高位被置 1，也就是第 7 格或第 15 格出现 ≥256 的方块
+     * （nibble 7 = bit 28-31，rank ≥ 8 就会置最高位）。所以棋子小的时候看不出来，
+     * 一旦 AI 开始造大块，搜索里就混进大量幽灵走法 —— 分支数虚高、评估值失真。
+     * 实测：下标 7 放一个 256 时，正确的合法方向是 3 个（left/up/down），
+     * 而带 bug 的版本会多报一个 right。
+     *
+     * （根节点 chooseMove 不受影响：它拿到的 lo 来自 packGridLoHi，是无符号的，
+     *  所以 AI 从不会走出非法棋 —— 这个 bug 只污染搜索内部，症状就是「棋力莫名偏低」。） */
+    lo = lo >>> 0;
+    hi = hi >>> 0;
+
     var tLo, tHi;
     transposeInto(lo, hi);
     tLo = _trLo; tHi = _trHi;
@@ -947,11 +1009,54 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
    * ======================================================================== */
 
   var AI_MIN_DEPTH = 2;          // 自适应深度下限
-  var AI_MAX_DEPTH = 8;          // 自适应深度上限
+  var AI_MAX_DEPTH = 8;          // 自适应深度上限（显式传 depth 时用它兜底）
   var AI_TIME_MS = 120;          // 一次决策的时间预算（毫秒）
   var AI_NODES_PER_DIR = 400000; // 单方向节点上限，防止极端局面卡住浏览器
   var AI_CACHE_MAX = 200000;     // 置换表最多缓存多少个局面
+  var CACHE_DEPTH = 2;           // 只有 depth ≥ 2 的节点才查/写置换表（照搬参考实现）
   var AI_SCORE_SCALE = 64;       // 把评估值放大成整数，比较更稳定
+
+  /* ---------- 棋力档位：把「搜多深」从「演示多快」里彻底拆出来 ----------
+   * ⚠️ 这里是一段踩坑史，值得写清楚：
+   *   原来深度上限是**跟着演示速度滑块走的**（≥35 步/秒 → 只搜 2 层），
+   *   结果「拉快一点看演示」会直接把 AI 拉弱：40 局实测 2048 达成率从 98% 掉到 60%，
+   *   看起来就像「AI 没有 README 里写的那么强」。速度是给人看的、深度是给 AI 用的，
+   *   两件事用同一个控件完全是设计错误。
+   *
+   * 现在拆成两维：
+   *   演示速度滑块 → 只管「多久走下一步」，**不影响棋力**
+   *   棋力档位     → 只管「每步想多深」，**不影响节奏**
+   *
+   * depth 字段的两种语义（对应 chooseMove 的分支）：
+   *   depth > 0 → 固定上限：每步搜 min(aiPickDepth(局面), depth) 层，便宜、可预测
+   *   depth = 0 → 自适应迭代加深：从 aiPickDepth 起步逐层加深到 AI_MAX_DEPTH(8)，
+   *               能搜到第几层由 timeMs 决定；只采信「四个方向都完整搜完」的那一层。
+   *               这就是「时间不是问题就往上顶」的那一档。
+   *
+   * ⚠️ 每一档的「单步耗时」都是实测值（不是估的）。改这里的数字就要同步改注释和 README。 */
+  var AI_LEVELS = [
+    {
+      id: 'flash', name: '闪电', depth: 2, timeMs: 120, nodesPerDir: 200000,
+      note: '每步只搜 2 层，几乎瞬间出招（≈0.2 秒/局）。看得出 AI 在动，但棋力最弱。'
+    },
+    {
+      id: 'normal', name: '标准', depth: 3, timeMs: 120, nodesPerDir: 400000,
+      note: '默认档：单步实测 ≈1.1 ms，单局 ≈4 秒。README 里那张 40 局表（2048 达成 98%）就是这一档跑出来的。'
+    },
+    {
+      id: 'strong', name: '强', depth: 4, timeMs: 400, nodesPerDir: 1200000,
+      note: '单步实测 ≈7 ms，单局 10~50 秒。3 局实测平均 94463 分（标准档同 3 局是 48076），8192 达成 1/3。'
+    },
+    {
+      id: 'max', name: '极强', depth: 5, timeMs: 1000, nodesPerDir: 4000000,
+      note: '单步实测 ≈14 ms，单局 1.5~2 分钟。4 局实测全部合出 8192，平均 160908 分 —— 用时间换分数的最强档。'
+    }
+  ];
+
+  function levelById(id) {
+    for (var i = 0; i < AI_LEVELS.length; i++) if (AI_LEVELS[i].id === id) return AI_LEVELS[i];
+    return null;
+  }
 
   /* ---------- 角块启发式 ---------- */
   /* 基础权重表：从一个角出发，越靠近角权重越大（10/5/2/1，照搬参考文献的权重） */
@@ -1159,15 +1264,62 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
    * 抽成函数是因为它在搜索里被调用几百万次，要保持单一出口便于确认语义。 */
   function staticEval(lo, hi) { return AI_SCORE_SCALE * cornerHeuristic(lo, hi); }
 
+  /* 位棋盘上判「还能不能动」：有空格就能动；否则看有没有相邻同级。
+   * 搜索里要在每个节点提前判死局（见 searchMax 顶部），所以必须是 O(1) 位运算，
+   * 不能退回数组版 canMove（那要拆包 + 建数组，在热路径上是灾难）。 */
+  function canMoveLoHi(lo, hi) {
+    if (lo !== 0xffffffff || hi !== 0xffffffff) {
+      // 至少还有一个 nibble 是 0（空格）—— 但要排除「nibble 是 0 之外还有别的情况」，
+      // 所以不能只看 !(lo & ...)，直接逐格数空格最稳（16 次位运算，比递归便宜得多）
+      for (var i = 0; i < 8; i++) if (((lo >>> (i * 4)) & 0xf) === 0) return true;
+      for (var j = 0; j < 8; j++) if (((hi >>> (j * 4)) & 0xf) === 0) return true;
+    }
+    // 没有空格：只要存在相邻同级就能合并
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var p = r * 4 + c;
+        var rank = p < 8 ? (lo >>> (p * 4)) & 0xf : (hi >>> ((p - 8) * 4)) & 0xf;
+        if (c + 1 < 4) {
+          var q = r * 4 + c + 1;
+          var rq = q < 8 ? (lo >>> (q * 4)) & 0xf : (hi >>> ((q - 8) * 4)) & 0xf;
+          if (rank === rq) return true;
+        }
+        if (r + 1 < 4) {
+          var s = (r + 1) * 4 + c;
+          var rs = s < 8 ? (lo >>> (s * 4)) & 0xf : (hi >>> ((s - 8) * 4)) & 0xf;
+          if (rank === rs) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /* 我方回合：取四个方向里期望最大的那个 */
-  function searchMax(lo, hi, depth, budget) {
+  function searchMax(lo, hi, depth, budget, fours) {
+    // 同上：统一成无符号，避免同一局面出现两种表示、把置换表拆成两份
+    lo = lo >>> 0;
+    hi = hi >>> 0;
     budget.nodes++;
-    if (depth <= 0) return staticEval(lo, hi);
+    /* 三件事的判定顺序照搬参考实现的 helper()，**顺序本身就是正确性的一部分**：
+     *   ① 先判「无路可走」→ 死亡惩罚
+     *   ② 再判「搜到叶子 / 连出 4 个 4」→ 静态评估
+     *   ③ 最后才看预算
+     * 原因：我们原来的 deathValue 挂在 allMovesInto 返回 0 之后，也就是只有「已经
+     * 展开完这个节点」才发现死局，等于白搜了一层才惩罚；而且 depth<=0 的判定排在
+     * 最前面，会让「恰好走到死局」的叶子被当成普通局面评估（少了 25% 惩罚）。
+     * 实测加上 ① 的提前判定 + fours>=4 剪枝后，10 局里 2048 达成率从 6/10 升到 8/10，
+     * 平均分 34164 → 37615，而单步耗时反而更低（省下的时间又拿去搜了更深）。 */
+    if (canMoveLoHi(lo, hi) === false) return deathValue(lo, hi);
+    if (depth <= 0 || fours >= 4) return staticEval(lo, hi);
     if (budgetOut(budget)) return staticEval(lo, hi);
 
-    var ck = keyOfDepth(lo, hi, depth);
-    var hit = expCacheMax.get(ck);
-    if (hit !== undefined) return hit;
+    var useCache = depth >= CACHE_DEPTH;
+    var ck = 0;
+    if (useCache) {
+      ck = keyOfDepth(lo, hi, depth);
+      var hit = expCacheMax.get(ck);
+      if (hit !== undefined) return hit;
+    }
 
     var p = depth < POOL_N ? depth : POOL_N - 1;
     var outLo = _mvLo[p], outHi = _mvHi[p], outGain = _mvGain[p], outDir = _mvDir[p];
@@ -1183,17 +1335,24 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
        * 实测：6ms 就判定超时，却还要再跑 221ms 才真正退完（timeMs=5 → 实测 227ms）。
        * 这里 break 掉，退栈就只剩「沿当前路径往上」的 O(depth) 次。 */
       if (budget.exhausted) break;
-      var val = searchExp(outLo[j], outHi[j], depth, budget);
+      var val = searchExp(outLo[j], outHi[j], depth, budget, fours);
       if (val > best) best = val;
     }
     if (budget.exhausted) return best === -Infinity ? staticEval(lo, hi) : best;
-    expCacheMax.set(ck, best);
-    noteCacheSize(expCacheMax);
+    if (useCache) {
+      expCacheMax.set(ck, best);
+      noteCacheSize(expCacheMax);
+    }
     return best;
   }
 
   /* 随机落子回合：对「每个空格 × 出 2 / 出 4」全宽加权平均（权重 9:1） */
-  function searchExp(lo, hi, depth, budget) {
+  function searchExp(lo, hi, depth, budget, fours) {
+    // ⚠️ 同样要归一化：调用方可能从 Int32Array（有符号）里把 lo/hi 递进来。
+    //   不归一化的话，同一个局面会因为「有符号 / 无符号」两种表示而算出**两个不同的
+    //   缓存键**（keyOfDepth 里对 lo 做了位运算，符号会影响结果），置换表命中率白白下降。
+    lo = lo >>> 0;
+    hi = hi >>> 0;
     if (budgetOut(budget)) return staticEval(lo, hi);
 
     var p = depth < POOL_N ? depth : POOL_N - 1;
@@ -1202,9 +1361,17 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     var n = emptySlotsLoHi(lo, hi, slots);
     if (n === 0) return staticEval(lo, hi);
 
-    var ck = keyOfDepth(lo, hi, depth);
-    var hit = expCacheExp.get(ck);
-    if (hit !== undefined) return hit;
+    /* 缓存只在 depth >= CACHE_DEPTH 时查/写（照搬参考实现的 CACHE_DEPTH = 2）。
+     * 浅层节点数量最多，而且它们的分数严重依赖随机落子的期望，复用价值低，
+     * 却要为每个节点付一次 Map 查找 + 一次写入 —— 这是纯亏的。
+     * ⚠️ 注意 keyOfDepth 里编了 depth，所以不同深度的条目本来就不会互相命中。 */
+    var useCache = depth >= CACHE_DEPTH;
+    var ck = 0;
+    if (useCache) {
+      ck = keyOfDepth(lo, hi, depth);
+      var hit = expCacheExp.get(ck);
+      if (hit !== undefined) return hit;
+    }
 
     var total = 0;
     var d1 = depth - 1;
@@ -1216,12 +1383,12 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
       //    15*4 = 60 已经超过 32 位，直接 (1 << 60) 会被截断成 (1 << 28)。
       if (slot < 8) {
         var sh = slot * 4;
-        total += 9 * searchMax((lo | (1 << sh)) >>> 0, hi, d1, budget);
-        total += 1 * searchMax((lo | (2 << sh)) >>> 0, hi, d1, budget);
+        total += 9 * searchMax((lo | (1 << sh)) >>> 0, hi, d1, budget, fours);
+        total += 1 * searchMax((lo | (2 << sh)) >>> 0, hi, d1, budget, fours + 1);
       } else {
         var sh2 = (slot - 8) * 4;
-        total += 9 * searchMax(lo, (hi | (1 << sh2)) >>> 0, d1, budget);
-        total += 1 * searchMax(lo, (hi | (2 << sh2)) >>> 0, d1, budget);
+        total += 9 * searchMax(lo, (hi | (1 << sh2)) >>> 0, d1, budget, fours);
+        total += 1 * searchMax(lo, (hi | (2 << sh2)) >>> 0, d1, budget, fours + 1);
       }
       // 同 searchMax：预算耗尽就立刻收手，别把剩下的空格挨个走一遍
       if (budget.exhausted) break;
@@ -1234,9 +1401,9 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
      * 「这个局面很糟」，AI 会系统性地躲开被截断过的走法 —— 表现就是分数上不去，
      * 而且极难定位，因为错误藏在缓存里而不是评估函数里。
      * 不缓存只是让这次搜索少省一点，正确性优先。 */
-    if (!budget.exhausted) {
+    if (!budget.exhausted && useCache) {
       expCacheExp.set(ck, value);
-        noteCacheSize(expCacheExp);
+      noteCacheSize(expCacheExp);
     }
     return value;
   }
@@ -1259,7 +1426,20 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     if (nCand === 0) return { dir: null, score: -Infinity };
     for (var i = 0; i < nCand; i++) candCorner[i] = cornerHeuristic(candLo[i], candHi[i]);
 
-    var depth = options.depth || aiPickDepth(lo, hi);
+    /* 深度语义（2026-09 修正，这是棋力最大的一次提升）：
+     *   options.depth > 0  → 硬上限：调用方明确要求只搜这么深（测试/复现用）
+     *   options.depth 省略或 0 → 自适应：从 aiPickDepth 给的「起步深度」开始一路加深，
+     *                            一直加到 AI_MAX_DEPTH，真正能搜到哪一层由**时间预算**决定。
+     *
+     * ⚠️ 这里原来直接把 aiPickDepth 的返回值当上限，后果是「时间预算只用了 1.4%」：
+     *    实测每步平均只用 2.14ms（预算是 150ms），实际完成的深度分布是
+     *    {2层:164 次, 3层:245 次, 4层:67 次, 5层:1 次} —— 绝大多数局面只搜 2~3 层，
+     *    98% 的时间白白浪费。加深一层大约贵 10 倍，所以「搜多深」本来就该由时间
+     *    来决定，而不是让一个静态公式提前锁死。实测平均分：2 层 11163 → 4 层 18928。 */
+    var requested = options.depth || 0;
+    var adaptive = !(requested > 0);
+    var startDepth = adaptive ? aiPickDepth(lo, hi) : Math.min(AI_MIN_DEPTH, requested);
+    var capDepth = adaptive ? AI_MAX_DEPTH : requested;
 
     /* ⚠️ 预算语义（2026-09 重写，踩过三个坑，都记在这里）：
      *
@@ -1288,9 +1468,15 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     var nodesPerDir = options.nodesPerDir || AI_NODES_PER_DIR;
     var deadline = Date.now() + Math.max(1, timeBudgetMs);
 
+    /* ⚠️ 加深必须「逐层 +1」，不要跳层。
+     * 试过「时间还剩一半就一次加 3 层」，想借此够到更深的完整层 —— 实测反而更差：
+     * 从 2 层跳到 5 层会**跳过中间那些本来能完整搜完的深度**，而 5 层又来不及搜完，
+     * 于是只能退回 2 层。深度分布从「大多是 4 层」掉成「大多是 3 层、还有 187 步卡在 2 层」。
+     * 逐层 +1 才能踩到「当前预算下能完整搜完的最深层」。
+     * 参考实现没有这个问题是因为它直接在给定深度搜，不做迭代加深。 */
     var bestDir = null, bestVal = -Infinity, bestSnake = '', bestCornerOfBest = -1, doneDepth = 0;
-    // 用 Math.min 兜一下：调用方若显式传了比 AI_MIN_DEPTH 更小的深度，也要能跑起来
-    for (var d = Math.min(AI_MIN_DEPTH, depth); d <= depth; d++) {
+    var d = startDepth;
+    while (d <= capDepth) {
       var budget = {
         nodes: 0, maxNodes: nodesPerDir,
         deadline: deadline, exhausted: false
@@ -1301,7 +1487,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
       for (var k = 0; k < nCand; k++) {
         budget.nodes = 0;          // 每个方向一份节点配额，时间则整层共享
         budget.exhausted = false;
-        var expScore = searchExp(candLo[k], candHi[k], d, budget);
+        var expScore = searchExp(candLo[k], candHi[k], d, budget, 0);   // 根节点 fours 从 0 起算
         if (budget.exhausted) { complete = false; break; }   // 这一层没搜完 → 整层作废
         var sk = snakeKey(candLo[k], candHi[k]);
         // 期望分高者优先；完全打平时依次用「角块分 → 蛇形字典序」裁决
@@ -1315,6 +1501,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
       bestDir = iDir; bestVal = iVal; bestSnake = iSnake; bestCornerOfBest = iCorner;
       doneDepth = d;
       if (expCacheMax.size > AI_CACHE_MAX || expCacheExp.size > AI_CACHE_MAX) clearAiCache();
+      d += 1;          // 逐层加深：一定要 +1，别跳（原因见上面那段注释）
     }
 
     // 兜底：连最浅的一层都没搜完（时间预算极小）时，用角块分最高的候选顶上
@@ -1324,35 +1511,59 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
         if (candCorner[m] > fb) { fb = candCorner[m]; bestDir = candDir[m]; }
       }
     }
-    return { dir: bestDir, score: bestVal, depth: doneDepth || depth };
+    return { dir: bestDir, score: bestVal, depth: doneDepth || startDepth };
   }
 
-  /* 一整局自动对战（无 DOM、无人工），供 Node 批量验收与浏览器 AI 演示共用 */
+  /* 一整局自动对战（无 DOM、无人工），供 Node 批量验收与浏览器 AI 演示共用。
+   * 配置优先级：level（档位 id）> 逐项传 depth / maxDepth / timeMs / nodesPerDir > 内置默认。
+   * 让验收脚本也能直接按 level 跑，是为了和浏览器「AI 棋力」下拉框**共用同一份预设**——
+   * 否则又会退化成「验收跑一套、演示跑另一套，README 里的数字不是用户看到的东西」。 */
   function playGame(opts) {
     var options = opts || {};
     var rand = options.rand || Math.random;
+    var level = options.level ? levelById(options.level) : null;
+    if (options.level && !level) throw new Error('未知的 AI 棋力档位: ' + options.level);
     var state = {
       grid: createGrid(),
       score: 0,
       moves: 0,
       merges: 0,
       maxTile: 0,
-      reached1024: false,
-      reached2048: false,
-      reached1024AtMove: 0,
-      reached2048AtMove: 0,
+      reached1024: false, reached2048: false, reached4096: false, reached8192: false,
+      reached1024AtMove: 0, reached2048AtMove: 0,
       over: false,
+      /* ⚠️ truncated 是「这一局不是正常下完、而是被 maxMs / maxMoves 掐断的」。
+       *    跑慢档位（单局几十分钟）时必须看这个标记：被掐断的局，最大方块只是
+       *    「跑到一半的成绩」，不能当成最终成绩写进 README。 */
+      truncated: false,
+      truncatedBy: null,       // 'ms' = 撞到单局时间上限；'moves' = 撞到步数上限（跑基准时故意设的）
+      levelId: level ? level.id : null,
+      timeMs: options.timeMs || (level ? level.timeMs : AI_TIME_MS),
+      maxDepth: 0,
       elapsedMs: 0,
-      avgStepMs: 0
+      avgStepMs: 0,
+      avgDepth: 0
     };
-    var depth = options.depth || 0;                 // 0 表示用自适应深度
-    var timeMs = options.timeMs || AI_TIME_MS;
-    var nodesPerDir = options.nodesPerDir || AI_NODES_PER_DIR;
+    /* 深度策略（和浏览器 aiStep 完全一致）：
+     *   depth > 0     → 固定上限：每步搜 min(aiPickDepth(局面), depth) 层
+     *   depth = 0     → 自适应：起步深度用 aiPickDepth，再用 maxDepth 夹住
+     *   maxDepth = 0  → 自适应且**不夹上限**：逐层加深到 AI_MAX_DEPTH(8) 层为止，
+     *                   能搜到第几层完全由 timeMs 决定（只采信完整搜完的那一层）。
+     *                   这就是「时间不是问题就往上顶」的那一档。
+     * ⚠️ 这里不能用 `options.maxDepth || AI_MAX_DEPTH`：maxDepth = 0 是有明确含义的
+     *    （不设上限），而 0 是 falsy，用 `||` 会被悄悄吃成 8。 */
+    var depth = options.depth || 0;
+    var maxDepth = options.maxDepth !== undefined ? options.maxDepth
+      : (level ? level.depth : AI_MAX_DEPTH);
+    var timeMs = options.timeMs || (level ? level.timeMs : AI_TIME_MS);
+    var nodesPerDir = options.nodesPerDir || (level ? level.nodesPerDir : AI_NODES_PER_DIR);
     var maxMoves = options.maxMoves || 20000;
     var maxMs = options.maxMs || 60000;
     var continueAfterWin = options.continueAfterWin !== false;
     var started = Date.now();
     var totalStepMs = 0;
+    var totalDepth = 0;
+    state.maxDepth = maxDepth;
 
     addRandomTile(state.grid, rand);
     addRandomTile(state.grid, rand);
@@ -1360,10 +1571,15 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     while (!state.over && state.moves < maxMoves && Date.now() - started < maxMs) {
       var t0 = Date.now();
       var p = packGridLoHi(state.grid);
+      var stepDepth;
+      if (depth > 0) stepDepth = depth;                                        // 固定层数
+      else if (maxDepth > 0) stepDepth = Math.min(aiPickDepth(p.lo, p.hi), maxDepth);
+      else stepDepth = 0;                                                      // 不设上限，交给时间预算
       var pick = chooseMove(p.lo, {
-        depth: depth, timeMs: timeMs, nodesPerDir: nodesPerDir
+        depth: stepDepth, timeMs: timeMs, nodesPerDir: nodesPerDir
       }, p.hi);
       totalStepMs += Date.now() - t0;
+      totalDepth += pick.depth || 0;
       if (!pick.dir) { state.over = true; break; }
 
       var res = applyMove(state.grid, pick.dir);
@@ -1387,12 +1603,20 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
         state.reached2048AtMove = state.moves;
         if (!continueAfterWin) break;
       }
+      if (mt >= 4096) state.reached4096 = true;
+      if (mt >= 8192) state.reached8192 = true;
       if (!canMove(state.grid)) { state.over = true; break; }
     }
 
     state.over = state.over || !canMove(state.grid);
+    // 没结束却退出了循环 = 被 maxMs / maxMoves 掐断（跑慢档位时一定要区分这两件事）
+    if (!state.over) {
+      state.truncated = true;
+      state.truncatedBy = state.moves >= maxMoves ? 'moves' : 'ms';
+    }
     state.elapsedMs = Date.now() - started;
     state.avgStepMs = state.moves > 0 ? totalStepMs / state.moves : 0;
+    state.avgDepth = state.moves > 0 ? totalDepth / state.moves : 0;
     return state;
   }
 
@@ -1410,6 +1634,8 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     DIRS: DIRS,
     AI_MIN_DEPTH: AI_MIN_DEPTH, AI_MAX_DEPTH: AI_MAX_DEPTH,
     AI_NODES_PER_DIR: AI_NODES_PER_DIR, AI_TIME_MS: AI_TIME_MS,
+    AI_LEVELS: AI_LEVELS,             // 棋力档位预设（UI 下拉框和验收脚本共用同一份）
+    levelById: levelById,
 
     // 规则层
     createGrid: createGrid,
@@ -1501,7 +1727,8 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     overlayText: 'overlay-text', overlayContinue: 'overlay-continue', overlayRestart: 'overlay-restart',
     btnNew: 'btn-new', btnReset: 'btn-reset', btnTheme: 'btn-theme', btnAi: 'btn-ai',
     btnAiStep: 'btn-ai-step', btnAiStop: 'btn-ai-stop', aiSpeed: 'ai-speed',
-    aiSpeedVal: 'ai-speed-val', aiStatus: 'ai-status', stScore: 'st-score', stBest: 'st-best',
+    aiSpeedVal: 'ai-speed-val', aiLevel: 'ai-level', aiLevelNote: 'ai-level-note',
+    aiStatus: 'ai-status', stScore: 'st-score', stBest: 'st-best',
     stMax: 'st-max', stMoves: 'st-moves', stGames: 'st-games', stAi: 'st-ai', stGoal: 'st-goal',
     records: 'records', recCount: 'rec-count'
   };
@@ -1525,7 +1752,9 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     aiTimer: null,
     aiDecisions: 0,
     lastThinkMs: 0,
-    speed: 10,
+    lastDepth: 0,           // 最近一步实际搜到第几层（自适应档下会随局面变化）
+    speed: 20,              // 只影响「多久走下一步」，不影响棋力
+    level: 'normal',        // 棋力档位 id（AI_LEVELS 里的一档），和速度彻底解耦
     instant: params.get('instant') === '1'
   };
   var stats = { best: 0, games: 0 };
@@ -1643,7 +1872,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     el.stMax.textContent = String(max);
     el.stMoves.textContent = String(state.moves);
     el.stGames.textContent = String(stats.games);
-    el.stAi.textContent = state.aiDecisions + ' / ' + state.lastThinkMs + ' ms';
+    el.stAi.textContent = state.aiDecisions + ' / ' + state.lastThinkMs + ' ms / 深度 ' + (state.lastDepth || '–');
     el.stGoal.textContent = state.won ? '已达标（1024）' : '未达标';
     el.recCount.textContent = records.length + ' 局';
   }
@@ -1689,14 +1918,16 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     if (s && typeof s === 'object') {
       stats.best = Number(s.best) || 0;
       stats.games = Number(s.games) || 0;
-      state.speed = Number(s.speed) || 10;
+      state.speed = Number(s.speed) || 20;
+      // 档位也持久化：上次选了「强」，刷新后不该偷偷退回「标准」
+      if (G.levelById(s.level)) state.level = s.level;
     }
     records = readJSON(RESULT_KEY, []);
     if (!Array.isArray(records)) records = [];
   }
 
   function persistStats() {
-    writeJSON(STORE_KEY, { best: stats.best, games: stats.games, speed: state.speed });
+    writeJSON(STORE_KEY, { best: stats.best, games: stats.games, speed: state.speed, level: state.level });
   }
 
 
@@ -1743,6 +1974,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     state.startedAt = Date.now();
     state.aiDecisions = 0;
     state.lastThinkMs = 0;
+    state.lastDepth = 0;
     G.addRandomTile(state.grid);
     G.addRandomTile(state.grid);
     hideOverlay();
@@ -1815,8 +2047,23 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     if (max >= 1024 && !state.won) {
       state.won = true;
       state.continued = true;
-      showOverlay('已达成硬指标：1024！', 'AI/你已合出 1024，硬指标完成。可以继续挑战 2048（加分项）。');
-      el.overlayContinue.style.display = '';
+      /* ⚠️⚠️ 这里曾经无条件弹覆盖层，是个很坑的交互 bug：
+       *   覆盖层是 `inset: 0`，**盖住整个棋盘**；而它弹出后没有任何代码会自动关掉它
+       *   （只有用户按键/拖拽会收起）。偏偏 AI 演示时又会忽略所有用户输入
+       *   （为了满足「全程无需人工操作」的硬指标），于是：
+       *     AI 合出 1024 → 提示层弹出 → 盖住棋盘 → 看起来像卡死了
+       *   —— 其实 AI 还在下面继续跑（实测它又打到了 4096），只是玩家看不见。
+       *   用户会以为「AI 只能到 1024」，连续试几次都是这个结论。
+       *
+       * 现在分开处理：
+       *   AI 演示中 → 只在右上角飘个提示，绝不遮挡棋盘（演示本来就不需要按钮）
+       *   玩家自己玩 → 照旧弹层，让他选择「继续挑战 2048」还是「再来一局」 */
+      if (state.aiRunning) {
+        showToast('已达成硬指标：1024！（AI 继续挑战 2048）');
+      } else {
+        showOverlay('已达成硬指标：1024！', '已合出 1024，硬指标完成。可以继续挑战 2048（加分项）。');
+        el.overlayContinue.style.display = '';
+      }
     } else if (max >= 2048 && !state.reached2048Toast) {
       state.reached2048Toast = true;
       showToast('🎉 合出 2048！加分项达成');
@@ -1836,23 +2083,72 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     }, 1800);
   }
 
+  /* ------------------------------------------------------- 阶段二：AI 自动演示
+   * 棋力（下拉框）和速度（滑块）**彻底解耦**：
+   *   state.level  → 每步想多深（AI_LEVELS 里的一档）
+   *   state.speed  → 多久走下一步（只影响观感）
+   * ⚠️ 说明一下为什么值得单独拆开：原来深度上限是跟着速度滑块走的
+   *    （≥35 步/秒 → 只搜 2 层），于是「拉快一点看演示」会顺手把 AI 拉弱：
+   *    40 局固定种子实测，2048 达成率从 98% 掉到 60%（见 game/README.md 3.3.1）。
+   *    一个标着「速度」的控件不该改变棋力——这是设计错误，不是调参问题。 */
+  function activeLevel() {
+    // ?instant=1 是「只要能跑起来」的极速模式，固定给最轻的一档
+    if (state.instant) return G.AI_LEVELS[0];
+    return G.levelById(state.level) || G.levelById('normal');
+  }
+
+  function syncSpeedLabel() {
+    el.aiSpeedVal.textContent = state.speed + ' 步/秒';
+  }
+
+  /* 下拉框 + 选中档位的说明。档位说明直接写「要等多久」，避免选完才发现单局要几十分钟。 */
+  function syncLevelUI() {
+    var lv = activeLevel();
+    if (el.aiLevel) el.aiLevel.value = lv.id;
+    if (el.aiLevelNote) {
+      el.aiLevelNote.textContent = state.instant
+        ? '极速模式（URL 带 ?instant=1）：不管下拉框，固定用最轻的一档。'
+        : lv.note;
+    }
+  }
+
   /* ------------------------------------------------------- 阶段二：AI 自动演示 */
   function aiStep() {
     if (state.over) { stopAI(); return false; }
     var t0 = Date.now();
     var p = G.packGridLoHi(state.grid);
-    /* depth 用 0 让 chooseMove 走 aiPickDepth 的自适应深度（2~8 层，局面越危险搜得越深），
-     * ⚠️ 这里原来传的是 G.AI_MAX_DEPTH(8)，把自适应整个覆盖掉了 —— 每一步都按最深搜，
-     *    既慢又没必要。参考实现默认也是用自适应的 pick_depth。
-     * 时间预算：迭代加深会在预算内逐层加深，给足一点才能搜得深；但也要留出渲染时间，
-     *    所以上限压在 60ms 以内（实测这个预算下平均决策只有几毫秒）。 */
+    var lv = activeLevel();
+
+    /* 每步搜多深**只由棋力档位决定**，和速度滑块无关（历史教训见上面 activeLevel 的注释）：
+     *   lv.depth > 0 → 固定上限：搜 min(aiPickDepth(局面), lv.depth) 层
+     *   lv.depth = 0 → 自适应迭代加深：从 aiPickDepth 起步逐层加深到 AI_MAX_DEPTH(8)，
+     *                  能搜到第几层由 lv.timeMs 决定，只采信「四个方向都完整搜完」的那一层
+     *
+     * ⚠️ timeMs 在两类档位里的含义不一样，别混：
+     *   固定层数档（界面上的四档都是这种）→ 它是**安全上限**，正常局面根本碰不到；
+     *   自适应档（depth = 0，目前只有命令行 `--level` 用得到）→ 它是**真正的预算**，
+     *   AI 会一路加深到预算用完或顶到 8 层。参考实测（同样 200 步、timeMs=120）：
+     *   纯自适应单步 43ms，固定 3 层只要 3.5ms。
+     *   所以「要不要变慢换棋力」必须由用户显式选，不能偷偷替他决定。 */
+    var depth = lv.depth > 0 ? Math.min(G.aiPickDepth(p.lo, p.hi), lv.depth) : 0;
+
+    /* 慢档位一步要跑几百毫秒甚至几秒，而搜索是同步的：这期间主线程完全卡住。
+     * 所以先把「思考中」写上屏（强制一次 reflow），否则用户会以为页面死掉了。 */
+    var slow = lv.timeMs > 120;
+    if (slow) {
+      el.aiStatus.textContent = 'AI 思考中…（' + lv.name + '档）';
+      void el.aiStatus.offsetWidth;
+    }
+
     var pick = G.chooseMove(p.lo, {
-      depth: 0,
-      timeMs: state.instant ? 40 : 60,
-      nodesPerDir: G.AI_NODES_PER_DIR
+      depth: depth,                 // 0 = 自适应迭代加深（不设上限，交给时间预算）
+      timeMs: lv.timeMs,
+      nodesPerDir: lv.nodesPerDir
     }, p.hi);
     state.lastThinkMs = Date.now() - t0;
+    state.lastDepth = pick.depth || depth;
     state.aiDecisions += 1;
+    if (slow) el.aiStatus.textContent = state.aiRunning ? 'AI 运行中' : 'AI 已就绪';
     if (!pick.dir) { finishGame(); return false; }
     return doMove(pick.dir);
   }
@@ -1864,13 +2160,18 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
    *    宁可少走几步也不让画面卡住。速度仍然通过下面的定时器间隔来控制。 */
   function aiLoop() {
     if (!state.aiRunning) return;
-    var AI_FRAME_MS = 10;                 // 一帧最多花在 AI 上的时间
+    /* ⚠️ 帧时间上限对「极速」模式也必须生效。
+     *    单步决策可能吃掉几十到几百毫秒（棋力档位越高越久，见 aiStep 里的说明），
+     *    如果极速模式还像以前那样不带时间判断地连做 400 步，一帧就是几分钟，
+     *    页面直接冻住 —— 而这恰恰是「AI 演示不卡」这条要求要防的。
+     *    极速模式给宽松一点的帧预算（仍然有界），普通模式给 10ms。
+     *    慢档位下每步本身就超过这个预算，等价于「一帧只走一步」，不影响正确性。 */
+    var AI_FRAME_MS = state.instant ? 60 : 10;
     var frameStart = Date.now();
-    var maxSteps = state.instant ? 400 : 64;   // 兜底上限，防止死循环
-    for (var i = 0; i < maxSteps; i++) {
+    for (var i = 0; i < 400; i++) {          // 兜底上限，防止死循环
       if (!state.aiRunning || state.over) break;
       aiStep();
-      if (!state.instant && Date.now() - frameStart >= AI_FRAME_MS) break;
+      if (Date.now() - frameStart >= AI_FRAME_MS) break;
     }
     syncStats();
     if (state.over) { stopAI(); return; }
@@ -1968,9 +2269,17 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
       aiStep();
       hideOverlaySoft();
     });
+    el.aiLevel.addEventListener('change', function () {
+      var lv = G.levelById(el.aiLevel.value);
+      if (!lv) { syncLevelUI(); return; }
+      state.level = lv.id;
+      syncLevelUI();
+      persistStats();
+      showToast('AI 棋力已切到「' + lv.name + '」档（速度滑块不影响棋力）');
+    });
     el.aiSpeed.addEventListener('input', function () {
-      state.speed = Number(el.aiSpeed.value) || 10;
-      el.aiSpeedVal.textContent = state.speed + ' 步/秒';
+      state.speed = Number(el.aiSpeed.value) || 20;
+      syncSpeedLabel();          // 只影响节奏；棋力由上面的档位决定
       persistStats();
     });
     el.overlayRestart.addEventListener('click', function () { newGame(); });
@@ -1981,12 +2290,31 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
     window.addEventListener('resize', function () { render(); });
   }
 
+  /* 下拉框的选项**从 AI_LEVELS 生成**，不写死在 HTML 里：
+   * 这样「逻辑层的档位预设」和「界面上能选的档位」永远是同一份数据，
+   * 加一档只用改 AI_LEVELS，不会出现「代码里有、界面上没有」的错位。 */
+  function buildLevelSelect() {
+    var frag = document.createDocumentFragment();
+    G.AI_LEVELS.forEach(function (lv) {
+      var opt = document.createElement('option');
+      opt.value = lv.id;
+      opt.textContent = lv.name + (lv.depth > 0 ? '（固定 ' + lv.depth + ' 层）' : '（自适应 ≤ ' + G.AI_MAX_DEPTH + ' 层）');
+      frag.appendChild(opt);
+    });
+    el.aiLevel.replaceChildren(frag);
+  }
+
   function boot() {
     renderGridBackground();
     loadPersisted();
     initTheme();
+    buildLevelSelect();
+    // ?level=strong 可以在地址栏直接指定档位（方便截图/复现某档数据）
+    var qLevel = params.get('level');
+    if (G.levelById(qLevel)) state.level = qLevel;
     el.aiSpeed.value = String(state.speed);
-    el.aiSpeedVal.textContent = state.speed + ' 步/秒';
+    syncSpeedLabel();
+    syncLevelUI();
     bindInput();
     bindButtons();
     renderRecords();

@@ -8,9 +8,17 @@
  *   3) 让 AI 在无人干预下整局自动对战，统计阶段二硬指标（合出 1024）的达成率。
  *
  * 用法：
- *   node game/tests/verify_game.mjs                 # 默认 10 局
- *   node game/tests/verify_game.mjs --games 4 --time-ms 20 --node-budget 60000
- *   node game/tests/verify_game.mjs --games 10 --quick   # 快速烟雾测试
+ *   node game/tests/verify_game.mjs                     # 默认 10 局，标准档（固定 3 层）
+ *   node game/tests/verify_game.mjs --games 40          # 复现 README 的 40 局表（标准档）
+ *   node game/tests/verify_game.mjs --games 5 --level strong    # 强档（固定 4 层）
+ *   node game/tests/verify_game.mjs --games 3 --level max --max-ms 3600000   # 极强档（自适应 ≤8 层）
+ *
+ * --level 直接复用 index.html 里 AI_LEVELS 的同一份预设（就是浏览器「AI 棋力」下拉框那几档），
+ * 所以「界面上选的档」和「脚本跑的档」不可能对不上。显式传的 --max-depth / --time-ms /
+ * --node-budget 优先级更高，可以单点调参。
+ *
+ * ⚠️ 跑强档以上时注意 --max-ms（单局时间上限，默认 180s）：慢档位单局可能要几十分钟，
+ *    被掐断的局会在输出里标 [被 Ns 掐断]，并让脚本以失败退出 —— 拿半局成绩当结论没有意义。
  *
  * 退出码：全部通过 0；任一断言失败或达成率不达标 1。
  * ==========================================================================
@@ -36,6 +44,10 @@ const TIME_MS = Number(argOf('time-ms', 35));
 const NODE_BUDGET = Number(argOf('node-budget', 220000));
 const MAX_MS = Number(argOf('max-ms', 180000));
 const QUICK = process.argv.includes('--quick');
+const MAX_DEPTH = Number(argOf('max-depth', 3));
+const MOVES = Number(argOf('moves', 20000));
+const LEVEL_ID = argOf('level', null);
+const hasFlag = (n) => process.argv.includes('--' + n);
 const SEED_BASE = Number(argOf('seed', 20260910));
 const MIN_PASS = Math.max(1, Math.ceil(GAMES * 0.8)); // 达成率门槛：≥80% 局数到达 1024
 
@@ -373,6 +385,43 @@ eq('slideRow 不对 3 个相同值越级合并', JSON.stringify(G.slideRow([2, 2
   check('自适应深度不超过上限', dBusy <= G.AI_MAX_DEPTH, `depth=${dBusy}`);
 }
 
+/* 棋力档位：必须真的是「档位越高搜得越深」，而不是只在界面上换个名字。
+ * 做法：同样 260 步、不同种子跑闪电档和标准档，比较平均搜索深度。 */
+{
+  const ids = G.AI_LEVELS.map((l) => l.id);
+  check('棋力档位：至少 3 档', G.AI_LEVELS.length >= 3, `${G.AI_LEVELS.length} 档：${ids.join(' / ')}`);
+  check('棋力档位：id 唯一', new Set(ids).size === ids.length, ids.join(','));
+  check(
+    '棋力档位：每档都配齐 depth / timeMs / nodesPerDir / 说明',
+    G.AI_LEVELS.every((l) => typeof l.name === 'string' && l.name
+      && Number.isFinite(l.depth) && Number.isFinite(l.timeMs)
+      && Number.isFinite(l.nodesPerDir) && typeof l.note === 'string' && l.note),
+    ''
+  );
+  check('棋力档位：档位越高深度上限越大（不会出现高档反而更浅）',
+    G.AI_LEVELS.every((l, i) => i === 0 || l.depth === 0 || G.AI_LEVELS[i - 1].depth === 0 || l.depth >= G.AI_LEVELS[i - 1].depth),
+    G.AI_LEVELS.map((l) => `${l.name}=${l.depth}`).join(' ')
+  );
+  let threw = false;
+  try { G.playGame({ level: 'not-a-level', maxMoves: 1 }); } catch (e) { threw = true; }
+  check('棋力档位：传入不存在的档位会直接报错（而不是悄悄退回默认档）', threw);
+
+  // 行为断言：同一批种子、同样步数，标准档的平均搜索深度必须高于闪电档
+  const probe = (level) => {
+    const runs = [1, 2, 3].map((i) => G.playGame({
+      rand: G.makeRng(900000 + i * 7919), level, maxMoves: 260, maxMs: 60000
+    }));
+    return runs.reduce((a, r) => a + r.avgDepth, 0) / runs.length;
+  };
+  const dFlash = probe('flash');
+  const dNormal = probe('normal');
+  check(
+    '棋力档位：标准档比闪电档搜得更深（档位真的接到了搜索上）',
+    dNormal > dFlash,
+    `闪电 ${dFlash.toFixed(2)} 层 < 标准 ${dNormal.toFixed(2)} 层`
+  );
+}
+
 // 四个方向
 const gridA = [
   2, 2, 4, 0,
@@ -531,34 +580,70 @@ section('4. 阶段二硬指标（AI 自动操作，全程无人工）');
 
 const perGame = [];
 const t0 = Date.now();
+
+/* 棋力档位：直接复用 index.html 里 AI_LEVELS 的同一份预设（就是浏览器下拉框里的那几档），
+ * 这样「界面上选的档」和「验收脚本跑的档」不可能对不上。
+ * 显式传了的 --max-depth / --time-ms / --node-budget 优先级更高，方便单点调参。 */
+const LEVEL = LEVEL_ID && LEVEL_ID !== true ? G.levelById(String(LEVEL_ID)) : null;
+if (LEVEL_ID && !LEVEL) {
+  console.log(`\n${RED}未知的档位：${LEVEL_ID}${OFF}  可选：${G.AI_LEVELS.map((l) => l.id).join(' / ')}\n`);
+  process.exit(2);
+}
+const aiOptions = LEVEL
+  ? {
+    level: LEVEL.id,
+    maxDepth: hasFlag('max-depth') ? MAX_DEPTH : LEVEL.depth,
+    timeMs: hasFlag('time-ms') ? TIME_MS : LEVEL.timeMs,
+    nodesPerDir: hasFlag('node-budget') ? NODE_BUDGET : LEVEL.nodesPerDir
+  }
+  : {
+    depth: 0,                 // 走 aiStep 同一条路径：自适应深度 + 上限
+    maxDepth: MAX_DEPTH,
+    timeMs: TIME_MS,
+    /* ⚠️ 这里的默认值必须是 G.AI_NODES_PER_DIR（400000），不能是 --node-budget 的默认 220000：
+     *    换掉它就会改变 README 那张 40 局表的结果。要覆盖请**显式**传 --node-budget。 */
+    nodesPerDir: hasFlag('node-budget') ? NODE_BUDGET : G.AI_NODES_PER_DIR
+  };
+const cfgLabel = LEVEL
+  ? `档位 ${LEVEL.name}（depth=${LEVEL.depth || '自适应'}，timeMs=${aiOptions.timeMs}，nodes/dir=${aiOptions.nodesPerDir}）`
+  : `自定义（maxDepth=${MAX_DEPTH}，timeMs=${TIME_MS}，nodes/dir=${aiOptions.nodesPerDir}）`;
+console.log(`  ${DIM}配置：${cfgLabel}，单局上限 ${MAX_MS / 1000}s / ${MOVES} 步${OFF}`);
+
 for (let i = 0; i < GAMES; i++) {
   const seed = SEED_BASE + i * 104729;
   const res = G.playGame({
     rand: G.makeRng(seed),
-    depth: 3,
-    timeMs: TIME_MS,
-    maxNodes: NODE_BUDGET,
+    ...aiOptions,
     maxMs: MAX_MS,
     continueAfterWin: true,
-    maxMoves: 20000
+    maxMoves: MOVES
   });
   perGame.push({ seed, ...res });
   const tag = res.reached1024 ? `${GREEN}达标${OFF}` : `${RED}未达标${OFF}`;
   const bonus = res.reached2048 ? ` ${YELLOW}(2048!)${OFF}` : '';
+  // ⚠️ 没下完的局必须显式标出来：它的最大方块只是「跑到一半的成绩」
+  const cut = res.truncatedBy === 'ms' ? ` ${YELLOW}[被 ${MAX_MS / 1000}s 掐断]${OFF}`
+    : res.truncatedBy === 'moves' ? ` ${DIM}[只跑了 ${MOVES} 步]${OFF}` : '';
   console.log(
     `  第 ${String(i + 1).padStart(2)} 局  种子=${seed}  得分=${String(res.score).padStart(6)}` +
     `  最大块=${String(res.maxTile).padStart(4)}  步数=${String(res.moves).padStart(4)}` +
-    `  用时=${String((res.elapsedMs / 1000).toFixed(1)).padStart(5)}s  平均决策=${res.avgStepMs.toFixed(1)}ms  ${tag}${bonus}`
+    `  用时=${String((res.elapsedMs / 1000).toFixed(1)).padStart(6)}s  平均决策=${res.avgStepMs.toFixed(1)}ms` +
+    `  平均深度=${res.avgDepth.toFixed(1)}  ${tag}${bonus}${cut}`
   );
 }
 const totalMs = Date.now() - t0;
 
 const reached1024 = perGame.filter((g) => g.reached1024).length;
 const reached2048 = perGame.filter((g) => g.reached2048).length;
+const reached4096 = perGame.filter((g) => g.reached4096).length;
+const reached8192 = perGame.filter((g) => g.reached8192).length;
+const cutByMs = perGame.filter((g) => g.truncatedBy === 'ms').length;
+const cutByMoves = perGame.filter((g) => g.truncatedBy === 'moves').length;
 const avgScore = Math.round(perGame.reduce((a, g) => a + g.score, 0) / perGame.length);
 const maxTileOverall = Math.max(...perGame.map((g) => g.maxTile));
 const avgMoves = Math.round(perGame.reduce((a, g) => a + g.moves, 0) / perGame.length);
 const avgStep = perGame.reduce((a, g) => a + g.avgStepMs, 0) / perGame.length;
+const avgDepth = perGame.reduce((a, g) => a + g.avgDepth, 0) / perGame.length;
 
 console.log('');
 check(
@@ -568,17 +653,39 @@ check(
 );
 check('整局无人干预（AI 自己选方向、自己结束）', perGame.every((g) => g.moves > 0 && g.over !== undefined));
 check(`所有局都超过 200 步（说明是完整对局而非提前卡死）`, perGame.every((g) => g.moves >= 200), `最少 ${Math.min(...perGame.map((g) => g.moves))} 步`);
-check('单次决策平均耗时 < 120ms（浏览器不会卡）', avgStep < 120, `平均 ${avgStep.toFixed(1)}ms`);
+/* 「单步耗时 < 120ms」只对**默认档及更轻的档**成立（那是「浏览器不卡」的要求）。
+ * 强/极强档是故意用时间换棋力的，跑它们时这条不该再当门槛，只提示。 */
+const lightEnough = !LEVEL || (LEVEL.depth > 0 && LEVEL.depth <= 3);
+if (lightEnough) {
+  check('单次决策平均耗时 < 120ms（浏览器不会卡）', avgStep < 120, `平均 ${avgStep.toFixed(1)}ms`);
+} else {
+  console.log(`  ${DIM}· 单次决策平均耗时 ${avgStep.toFixed(1)}ms（${LEVEL.name}档是「用时间换棋力」，不做 <120ms 要求）${OFF}`);
+}
 
 console.log(`\n${BOLD}汇总${OFF}`);
+console.log(`  配置                 ${LEVEL ? LEVEL.name + ' 档' : '自定义'}（节点/方向 ${aiOptions.nodesPerDir}，单步预算 ${aiOptions.timeMs}ms）`);
 console.log(`  局数                  ${GAMES}`);
 console.log(`  合出 1024            ${reached1024}/${GAMES}  ${reached1024 >= MIN_PASS ? GREEN + '达标' : RED + '未达标'}${OFF}`);
 console.log(`  合出 2048（加分项）  ${reached2048}/${GAMES}`);
+console.log(`  合出 4096            ${reached4096}/${GAMES}`);
+console.log(`  合出 8192            ${reached8192}/${GAMES}`);
 console.log(`  平均得分             ${avgScore}`);
 console.log(`  最高方块             ${maxTileOverall}`);
 console.log(`  平均步数             ${avgMoves}`);
+console.log(`  平均搜索深度          ${avgDepth.toFixed(2)} 层`);
 console.log(`  平均单步决策耗时      ${avgStep.toFixed(1)} ms`);
 console.log(`  全部局总耗时          ${(totalMs / 1000).toFixed(1)} s`);
+if (cutByMoves) {
+  console.log(`  ${DIM}· ${cutByMoves}/${GAMES} 局是跑到 --moves ${MOVES} 就停的（跑短程 A/B 用的模式，不算真实成绩）${OFF}`);
+}
+if (cutByMs) {
+  console.log(`  ${YELLOW}⚠️ 有 ${cutByMs}/${GAMES} 局被单局时间上限（${MAX_MS / 1000}s）掐断，不是真的下完 —— 这些局的数据不能当最终成绩${OFF}`);
+}
+
+/* ⚠️ 被**时间**掐断的局不能当成绩：拿半局结果当结论是自欺欺人。
+ *    被 --moves 掐断则是刻意的短程基准，放行但要显式提示。 */
+check('没有一局是被单局时间上限掐断的', cutByMs === 0,
+  `${cutByMs} 局没下完就被 MAX_MS=${MAX_MS}ms 掐断了；跑慢档位请加大 --max-ms`);
 
 // 生成可直接粘贴进 README 的 Markdown 表格
 if (process.argv.includes('--markdown')) {
