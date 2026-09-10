@@ -118,8 +118,8 @@ VS Code（<https://code.visualstudio.com/>）。
 - [x] 注册 GitHub 账号（用户名 `2107596808`）
 - [ ] **开启两步验证**：Settings → Password and authentication → Two-factor authentication
 - [x] 新建仓库：<https://github.com/2107596808/gdut-ic-2026>
-- [ ] 把代码推上去
-- [ ] 打开 GitHub Pages（见下一节）
+- [x] 把代码推上去（`main` 分支）
+- [x] 打开 GitHub Pages（Source = `main` + `/docs`）→ <https://2107596808.github.io/gdut-ic-2026/>
 - [ ] 截止前把仓库链接交到群里的收集表
 
 ---
