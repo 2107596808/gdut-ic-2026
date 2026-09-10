@@ -50,6 +50,23 @@ import math
 import os
 import sys
 
+# NumPy 是 PySpice 的依赖；提前导入，用于把仿真结果里的 0 维数组安全转成 Python 标量。
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+# ---------------------------------------------------------------- 控制台编码
+# ⚠️ 中文 Windows 控制台默认是 GBK，而本脚本要打印 ✓ / ✗ / 表格边框等字符，
+#   GBK 里没有这些码位，Python 会直接抛 UnicodeEncodeError 让脚本崩溃。
+#   在任何 print 之前把 stdout/stderr 切成 UTF-8，并允许无法编码的字符被替换，
+#   保证「打印日志」这个动作本身永远不会让脚本失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # 流被重定向到不支持 reconfigure 的对象时忽略
+
 # ----------------------------------------------------------------- 题给参数
 VDD = 5.0
 RG1 = 60e3
@@ -69,6 +86,19 @@ VDS_HAND = None
 GM_HAND = None
 RO_HAND = None
 AV_HAND = None
+
+# ---------------------------------------------------------------- 兼容层
+# ⚠️ 必须在 import PySpice **之前** 生效，见 circuits/_ngspice_compat.py 的说明：
+#   PySpice 1.5 与 ngspice 43+ / NumPy 2 有几处不兼容（raw 头多了 Command 字段、
+#   np.fromstring 二进制模式被移除），不修的话仿真直接抛异常。
+try:
+    import _ngspice_compat  # noqa: F401  (import 即生效)
+except ImportError:  # 脚本被当作包内模块导入时，走相对路径再试一次
+    try:
+        from . import _ngspice_compat  # noqa: F401
+    except Exception:
+        pass
+
 
 
 def hand_calculations():
@@ -136,8 +166,9 @@ def run_dc():
     c.M("1", "d", "g", c.gnd, c.gnd, model="NMOS1")
 
     op = c.simulator(simulator="ngspice-subprocess", temperature=25).operating_point()
-    vg = float(op["g"])
-    vd = float(op["d"])
+    # ⚠️ 0 维数组要经过 np.asarray(...).ravel() 再取标量，直接 float() 会抛 TypeError
+    vg = float(np.asarray(op["g"], dtype=float).ravel()[0])
+    vd = float(np.asarray(op["d"], dtype=float).ravel()[0])
     id_ = (VDD - vd) / RD
     return dict(vg=vg, vd=vd, id_=id_)
 
@@ -145,31 +176,34 @@ def run_dc():
 def run_transient(save_dir, do_plot=True):
     """瞬态：输入 10mV/1kHz 正弦，看输出反相放大并实测增益"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm, u_uF, u_ms, u_us
+    from PySpice.Unit import u_V, u_Ohm, u_F, u_ms, u_us
 
     c = Circuit("NMOS common-source - transient")
     model = spice_model()
     c.model("NMOS1", "nmos", **model)
     c.SinusoidalVoltageSource("sig", "vi", c.gnd, amplitude=VI_AMP, frequency=FREQ)
-    c.C("b1", "vi", "g", CB1 @ u_uF)         # Cb1：隔直电容，视为足够大
-    c.R("g1", "vdd", "g", RG1 @ u_kOhm)
-    c.R("g2", "g", c.gnd, RG2 @ u_kOhm)
+    c.C("b1", "vi", "g", CB1 @ u_F)         # Cb1：隔直电容，视为足够大
+    c.R("g1", "vdd", "g", RG1 @ u_Ohm)
+    c.R("g2", "g", c.gnd, RG2 @ u_Ohm)
     c.V("dd", "vdd", c.gnd, VDD @ u_V)
-    c.R("d", "vdd", "d", RD @ u_kOhm)
+    c.R("d", "vdd", "d", RD @ u_Ohm)
     c.M("1", "d", "g", c.gnd, c.gnd, model="NMOS1")
 
     sim = c.simulator(simulator="ngspice-subprocess", temperature=25)
     analysis = sim.transient(step_time=2 @ u_us, end_time=5 @ u_ms)
-    t = [float(x) for x in analysis.time]
-    vin = [float(x) for x in analysis["vi"]]
-    vg = [float(x) for x in analysis["g"]]
-    vout = [float(x) for x in analysis["d"]]
+    # ⚠️ 逐点 float() 在新版 NumPy 下会拿到 0 维数组并抛
+    #    TypeError: only 0-dimensional arrays can be converted to Python scalars
+    #    统一一次性转成 NumPy 数组再做统计。
+    t = np.asarray(analysis.time, dtype=float).ravel()
+    vin = np.asarray(analysis["vi"], dtype=float).ravel()
+    vg = np.asarray(analysis["g"], dtype=float).ravel()
+    vout = np.asarray(analysis["d"], dtype=float).ravel()
 
     # 取后半段（已进入稳态）算峰峰值与增益
     half = len(t) // 2
-    vin_pp = max(vin[half:]) - min(vin[half:])
-    vg_pp = max(vg[half:]) - min(vg[half:])
-    vout_pp = max(vout[half:]) - min(vout[half:])
+    vin_pp = float(vin[half:].max() - vin[half:].min())
+    vg_pp = float(vg[half:].max() - vg[half:].min())
+    vout_pp = float(vout[half:].max() - vout[half:].min())
     av_meas = vout_pp / vg_pp if vg_pp else float("nan")
 
     # 判断反相：找输出最大处，看对应输入是否接近最小
@@ -357,7 +391,20 @@ def main():
     ]:
         err = abs(sv - hv) / hv * 100 if hv else float("nan")
         print(f"  {name:<12}{hv:>16.4f}{sv:>16.4f}{err:>11.3f}%")
-    print(f"  饱和区判断：V_DS = {dc['vd']:.3f} V > V_ov = {hand['vov']:.3f} V ⇒ 工作在饱和区 ✔")
+
+    # ⚠️ I_D 上的 ~7% 差异不是错误，必须解释清楚，否则看起来像仿真跑错了。
+    #   题卡给的 I_D = K·V_ov² 是**忽略沟道长度调制**的简化式；
+    #   而 SPICE 的 level-1 模型带 λ 项：I_D = K·V_ov²·(1 + λ·V_DS)。
+    #   代入 V_DS≈3.28V：0.8m × (1 + 0.02×3.28) ≈ 0.853 mA，仿真给 0.858 mA，
+    #   残差 0.6% —— 两者其实高度一致。这一行就是用来消除误会的。
+    vds_sim = dc["vd"]
+    id_with_lambda = K * hand["vov"] ** 2 * (1 + LAMBDA * vds_sim)
+    print(f"  饱和区判断：V_DS = {vds_sim:.3f} V > V_ov = {hand['vov']:.3f} V ⇒ 工作在饱和区 ✔")
+    print(f"  ⚠️ I_D 差异说明：上面的手算用的是题卡简化式 I_D = K·V_ov²（不计 λ），")
+    print(f"     而 SPICE 用含沟道长度调制的完整式 I_D = K·V_ov²·(1+λ·V_DS)")
+    print(f"        = {K*1e3:.2f}m × {hand['vov']:.2f}² × (1+{LAMBDA:.2f}×{vds_sim:.3f}) = {id_with_lambda*1e3:.4f} mA")
+    print(f"     与仿真的 {dc['id_']*1e3:.4f} mA 只差 {abs(dc['id_']-id_with_lambda)/dc['id_']*100:.2f}%。")
+    print(f"     也就是说这 7% 是「简化公式 vs 完整模型」的固有差别，不是仿真误差。")
 
     print("\n" + "=" * 72)
     print("对比表 2：小信号增益（手算 vs 瞬态实测）")

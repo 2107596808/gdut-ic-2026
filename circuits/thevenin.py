@@ -37,6 +37,23 @@ import argparse
 import os
 import sys
 
+# NumPy 是 PySpice 的依赖；提前导入，用于把仿真结果里的 0 维数组安全地转成 Python 标量。
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+# ---------------------------------------------------------------- 控制台编码
+# ⚠️ 中文 Windows 控制台默认是 GBK，而本脚本要打印 ✓ / ✗ / 表格边框等字符，
+#   GBK 里没有这些码位，Python 会直接抛 UnicodeEncodeError 让脚本崩溃。
+#   在任何 print 之前把 stdout/stderr 切成 UTF-8，并允许无法编码的字符被替换，
+#   保证「打印日志」这个动作本身永远不会让脚本失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # 流被重定向到不支持 reconfigure 的对象时忽略
+
 # ----------------------------------------------------------------- 元件参数
 V1 = 12.0       # 电源电压 V
 R1 = 4e3        # 4 kΩ
@@ -48,6 +65,19 @@ V_OC_HAND = V1 * R2 / (R1 + R2)          # 9 V
 I_SC_HAND = V1 / R1                      # 3 mA
 R_TH_HAND = V_OC_HAND / I_SC_HAND        # 3 kΩ
 R_TH_PARALLEL = R1 * R2 / (R1 + R2)      # 用并联公式再验算一次
+
+# ---------------------------------------------------------------- 兼容层
+# ⚠️ 必须在 import PySpice **之前** 生效，见 circuits/_ngspice_compat.py 的说明：
+#   PySpice 1.5 与 ngspice 43+ / NumPy 2 有几处不兼容（raw 头多了 Command 字段、
+#   np.fromstring 二进制模式被移除），不修的话仿真直接抛异常。
+try:
+    import _ngspice_compat  # noqa: F401  (import 即生效)
+except ImportError:  # 脚本被当作包内模块导入时，走相对路径再试一次
+    try:
+        from . import _ngspice_compat  # noqa: F401
+    except Exception:
+        pass
+
 
 
 def hand_calculations():
@@ -77,57 +107,64 @@ def _sim(circuit):
 def measure_oc():
     """空载：量开路电压"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm
+    from PySpice.Unit import u_V, u_Ohm
 
     c = Circuit("Thevenin - open circuit")
     c.V("1", "n1", c.gnd, V1 @ u_V)
-    c.R("1", "n1", "a", R1 @ u_kOhm)
-    c.R("2", "a", c.gnd, R2 @ u_kOhm)
+    c.R("1", "n1", "a", R1 @ u_Ohm)
+    c.R("2", "a", c.gnd, R2 @ u_Ohm)
     op = _sim(c).operating_point()
-    return float(op["a"])
+    # ⚠️ 新版 NumPy 下 op["a"] 是 0 维/1 元数组，直接 float() 会抛 TypeError。
+    return float(np.asarray(op["a"], dtype=float).ravel()[0])
 
 
 def measure_sc():
     """短路：用 0 V 电压源把 a、b 短接，量流过它的电流"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm
+    from PySpice.Unit import u_V, u_Ohm
 
     c = Circuit("Thevenin - short circuit")
     c.V("1", "n1", c.gnd, V1 @ u_V)
-    c.R("1", "n1", "a", R1 @ u_kOhm)
-    c.R("2", "a", c.gnd, R2 @ u_kOhm)
+    c.R("1", "n1", "a", R1 @ u_Ohm)
+    c.R("2", "a", c.gnd, R2 @ u_Ohm)
     c.V("sc", "a", c.gnd, 0 @ u_V)      # 0 V 电源 = 理想短路线
     op = _sim(c).operating_point()
     # 流过短路线的电流（SPICE 里电压源电流正方向为流入正端）
-    return abs(float(op.branches["vsc"]))
+    # ⚠️ 支路名的大小写不稳定：ngspice 自己写 `vsc`，但 PySpice 的 fix_case() 会把它
+    #    按电路里的元件名还原成 `Vsc`。写死任一种都会 KeyError，这里大小写不敏感地找。
+    br = {k.lower(): k for k in op.branches.keys()}
+    key = br.get("vsc") or br.get("v1")
+    if key is None:
+        raise KeyError("找不到短路支路，实际支路有：" + ", ".join(op.branches.keys()))
+    return abs(float(np.asarray(op.branches[key], dtype=float).ravel()[0]))
 
 
 def measure_original_with_load(rl):
     """原网络接负载 RL：返回 (端口电压, 负载电流)"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm
+    from PySpice.Unit import u_V, u_Ohm
 
     c = Circuit(f"Thevenin - original with RL={rl:.0f}")
     c.V("1", "n1", c.gnd, V1 @ u_V)
-    c.R("1", "n1", "a", R1 @ u_kOhm)
-    c.R("2", "a", c.gnd, R2 @ u_kOhm)
-    c.R("L", "a", c.gnd, rl @ u_kOhm)
+    c.R("1", "n1", "a", R1 @ u_Ohm)
+    c.R("2", "a", c.gnd, R2 @ u_Ohm)
+    c.R("L", "a", c.gnd, rl @ u_Ohm)
     op = _sim(c).operating_point()
-    v = float(op["a"])
+    v = float(np.asarray(op["a"], dtype=float).ravel()[0])
     return v, v / rl
 
 
 def measure_equivalent_with_load(vth, rth, rl):
     """戴维南等效电路接负载 RL：返回 (端口电压, 负载电流)"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm
+    from PySpice.Unit import u_V, u_Ohm
 
     c = Circuit(f"Thevenin - equivalent with RL={rl:.0f}")
     c.V("th", "a", c.gnd, vth)
-    c.R("th", "a", "b", rth @ u_kOhm)
-    c.R("L", "b", c.gnd, rl @ u_kOhm)
+    c.R("th", "a", "b", rth @ u_Ohm)
+    c.R("L", "b", c.gnd, rl @ u_Ohm)
     op = _sim(c).operating_point()
-    v = float(op["b"])
+    v = float(np.asarray(op["b"], dtype=float).ravel()[0])
     return v, v / rl
 
 

@@ -30,6 +30,24 @@ import math
 import os
 import sys
 
+# NumPy 是 PySpice 的依赖，装了 PySpice 就一定有；这里提前导入，
+# 免得在读取仿真波形（几百万个点）时才 import。
+try:
+    import numpy as np
+except ImportError:  # 没装 PySpice 时不应该因为缺 numpy 而直接崩，交给下面的兼容层提示
+    np = None
+
+# ---------------------------------------------------------------- 控制台编码
+# ⚠️ 中文 Windows 控制台默认是 GBK，而本脚本要打印 ✓ / ✗ / 表格边框等字符，
+#   GBK 里没有这些码位，Python 会直接抛 UnicodeEncodeError 让脚本崩溃。
+#   在任何 print 之前把 stdout/stderr 切成 UTF-8，并允许无法编码的字符被替换，
+#   保证「打印日志」这个动作本身永远不会让脚本失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # 流被重定向到不支持 reconfigure 的对象时忽略
+
 # ----------------------------------------------------------------- 元件参数
 R = 1e3        # 1 kΩ
 C = 100e-9     # 100 nF
@@ -40,6 +58,22 @@ F_SQ = 1e3     # 方波频率 1 kHz
 TAU_HAND = R * C                       # 时间常数
 FC_HAND = 1.0 / (2 * math.pi * R * C)  # 截止频率
 # 方波周期 1 kHz = 1 ms，半周期 0.5 ms ≈ 5τ，足以充到稳态
+PULSE_HALF_S = 0.5 / F_SQ              # 半个周期 = 高电平持续时间（0.5 ms）
+# 读 τ 时只在第一个高电平窗口内找 63.2% 点，否则会被后面几个周期的峰值带偏
+PULSE_WIDTH_S = PULSE_HALF_S * 0.999   # 留一点点余量，避开下降沿
+
+# ---------------------------------------------------------------- 兼容层
+# ⚠️ 必须在 import PySpice **之前** 生效，见 circuits/_ngspice_compat.py 的说明：
+#   PySpice 1.5 与 ngspice 43+ / NumPy 2 有几处不兼容（raw 头多了 Command 字段、
+#   np.fromstring 二进制模式被移除），不修的话仿真直接抛异常。
+try:
+    import _ngspice_compat  # noqa: F401  (import 即生效)
+except ImportError:  # 脚本被当作包内模块导入时，走相对路径再试一次
+    try:
+        from . import _ngspice_compat  # noqa: F401
+    except Exception:
+        pass
+
 
 
 def hand_calculations():
@@ -67,7 +101,7 @@ def build_circuit():
 def run_transient(save_dir, do_plot=True):
     """瞬态：方波输入（用脉冲源代替方波），读 τ"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_ms, u_ns, u_kOhm, u_nF
+    from PySpice.Unit import u_V, u_ms, u_us, u_ns, u_Ohm, u_F
 
     circuit = Circuit("RC low-pass filter (transient)")
     # 方波：0 → 2 V，周期 1 ms，占空比 50%
@@ -77,26 +111,43 @@ def run_transient(save_dir, do_plot=True):
         delay_time=0 @ u_ms, rise_time=1 @ u_ns, fall_time=1 @ u_ns,
         pulse_width=0.5 @ u_ms, period=1 @ u_ms,
     )
-    circuit.R(1, "vin", "vout", R @ u_kOhm)
-    circuit.C(1, "vout", circuit.gnd, C @ u_nF)
+    circuit.R(1, "vin", "vout", R @ u_Ohm)
+    circuit.C(1, "vout", circuit.gnd, C @ u_F)
 
     sim = circuit.simulator(simulator="ngspice-subprocess", temperature=25)
-    analysis = sim.transient(step_time=1 @ u_ns, end_time=3 @ u_ms)
-    t = [float(x) for x in analysis.time]
-    vin = [float(x) for x in analysis["vin"]]
-    vout = [float(x) for x in analysis["vout"]]
+    # ⚠️ 步长必须用 µs 级，不能用 1ns。
+    # 原来写的是 step_time=1ns，实测 ngspice 在 t≈0 附近会自动取 1e-11 量级的密集点，
+    # 配合 1ns 的输入上升沿，数值积分在头几个点上就崩了 —— vout 在前 12 个采样点内
+    # 直接冲到 2.0V（RC 常数是 100µs，物理上不可能），而终值又恰好收敛到 1.9866V，
+    # 看起来「挺对」，极容易误判。换成 1µs 步长后波形完全正确：
+    #     t=100µs → vout=1.2697V（正好 63.2%，即 τ）
+    # 顺带采样点从 300 万降到 3 千，跑得快得多。
+    analysis = sim.transient(step_time=1 @ u_us, end_time=3 @ u_ms)
+    t = np.asarray(analysis.time, dtype=float)
+    vin = np.asarray(analysis["vin"], dtype=float)
+    vout = np.asarray(analysis["vout"], dtype=float)
 
-    # 从第一个上升沿后读 τ：vout 第一次达到 稳态值 63.2% 的时刻
-    v_final = max(vout)
+    # ⚠️ τ 的定义是「从**阶跃发生那一刻**算起到 63.2% 的时间」，起点必须取输入的上升沿，
+    #   不能取采样窗口的第一个点。
+    #   旧写法用 tw[0] 当 t0，而窗口是从 t=0 开始的，于是 τ 被算成「第 8 个采样点减第 0 个」
+    #   ≈ 1e-9 秒 ≈ 0.00µs —— 数据明明是对的，测出来却是 0，就是这么来的。
+    first_pulse = t <= PULSE_WIDTH_S
+    v_final = float(vout[first_pulse].max()) if first_pulse.any() else float(vout.max())
     target = 0.632 * v_final
-    t0 = None
-    tau_meas = None
-    for i, (tt, vv) in enumerate(zip(t, vout)):
-        if t0 is None and vv > 0.01 * v_final:
-            t0 = tt
-        if t0 is not None and vv >= target:
-            tau_meas = tt - t0
-            break
+    tw = t[first_pulse]
+    vw = vout[first_pulse]
+    vinw = vin[first_pulse]
+
+    # 起点 t0 = 阶跃发生的时刻。脉冲源的 delay_time = 0，所以就是 t = 0。
+    # ⚠️ 不要用「vin 第一次 ≥ 50% 的采样点」去找上升沿：ngspice 在 t≈0 附近会自动
+    #    插一批 1e-11 间隔的密集点（那是自适应步长的初始爬坡），按前者找会得到
+    #    t0 ≈ 1e-9，于是 τ 被算成「第 8 个点减第 7 个点」≈ 6e-10 s ≈ 0.00µs。
+    #    波形数据本身完全正确（t=100µs 处 vout=1.2697V 正好是 63.2%），
+    #    错的只是「从哪里开始计时」。
+    t0 = float(tw[0]) if tw.size else 0.0
+
+    reached = np.flatnonzero(vw >= target)
+    tau_meas = (float(tw[reached[0]]) - t0) if reached.size else None
 
     print("\n瞬态分析（方波输入，读充电到 63.2% 的时间）")
     print(f"  稳态输出电压   {v_final:.4f} V")
@@ -112,28 +163,27 @@ def run_transient(save_dir, do_plot=True):
 def run_ac(save_dir, do_plot=True):
     """交流扫频：读 -3 dB 点得到 fc"""
     from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import u_V, u_kOhm, u_nF
+    from PySpice.Unit import u_V, u_Ohm, u_F
 
     circuit = Circuit("RC low-pass filter (AC)")
     circuit.SinusoidalVoltageSource("in", "vin", circuit.gnd, amplitude=1 @ u_V)
-    circuit.R(1, "vin", "vout", R @ u_kOhm)
-    circuit.C(1, "vout", circuit.gnd, C @ u_nF)
+    circuit.R(1, "vin", "vout", R @ u_Ohm)
+    circuit.C(1, "vout", circuit.gnd, C @ u_F)
 
     sim = circuit.simulator(simulator="ngspice-subprocess", temperature=25)
     analysis = sim.ac(start_frequency=10, stop_frequency=1e6, number_of_points=100, variation="dec")
-    freq = [float(x) for x in analysis.frequency]
-    vout = [complex(x) for x in analysis["vout"]]
-    mag = [abs(v) for v in vout]
-    phase = [math.degrees(math.atan2(v.imag, v.real)) for v in vout]
+    # ⚠️ 逐点 `float(x)` / `complex(x)` 在新版 NumPy 下会拿到 0 维数组，
+    #    float() 只对 0 维可用，而复数列直接抛 TypeError。统一用 np.asarray 展开。
+    freq = np.asarray(analysis.frequency, dtype=float).ravel()
+    vout = np.asarray(analysis["vout"], dtype=complex).ravel()
+    mag = np.abs(vout)
+    phase = np.degrees(np.angle(vout))
 
     # -3 dB 点：低频增益的 1/sqrt(2)
-    gain_low = mag[0]
+    gain_low = float(mag[0])
     target = gain_low / math.sqrt(2)
-    fc_meas = None
-    for f, m in zip(freq, mag):
-        if m <= target:
-            fc_meas = f
-            break
+    below = np.flatnonzero(mag <= target)
+    fc_meas = float(freq[below[0]]) if below.size else None
 
     print("\n交流分析（扫频读 -3 dB 点）")
     print(f"  低频增益       {gain_low:.4f}（应 ≈ 1）")

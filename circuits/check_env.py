@@ -16,6 +16,17 @@ import importlib.util
 import os
 import sys
 
+# ---------------------------------------------------------------- 控制台编码
+# ⚠️ 中文 Windows 控制台默认是 GBK，而本脚本要打印 ✓ / ✗ / 表格边框等字符，
+#   GBK 里没有这些码位，Python 会直接抛 UnicodeEncodeError 让脚本崩溃。
+#   在任何 print 之前把 stdout/stderr 切成 UTF-8，并允许无法编码的字符被替换，
+#   保证「打印日志」这个动作本身永远不会让脚本失败。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # 流被重定向到不支持 reconfigure 的对象时忽略
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILES = ["rc_lowpass.py", "thevenin.py", "nmos_cs_amp.py"]
 
@@ -51,12 +62,33 @@ def check_pyspice():
 
 
 def check_ngspice():
-    print("\n[3/3] 检查 ngspice 共享库")
+    """检查 ngspice 是否真的能用来跑仿真。
+
+    ⚠️ 不要用 `NgSpiceShared.new_instance().lib` 来判断：PySpice 1.5 里这个属性
+    在部分版本/平台上根本不存在（会抛 AttributeError），于是「明明装好了 ngspice
+    也跑得通仿真」却被报成没装 —— 假阴性。这里改成真正跑一次最小仿真来验证，
+    结论最可靠。
+    """
+    print("\n[3/3] 检查 ngspice 能否真正跑仿真")
     try:
-        from PySpice.Spice.NgSpice.Shared import NgSpiceShared
-        shared = NgSpiceShared.new_instance()
-        print(f"  ✓ 已找到 ngspice：{shared.lib}")
-        return True
+        import _ngspice_compat  # noqa: F401  兼容层，import 即生效
+    except Exception:
+        pass
+    try:
+        from PySpice.Spice.Netlist import Circuit
+        from PySpice.Unit import u_V, u_Ohm
+        c = Circuit("env check")
+        c.V("1", "n1", c.gnd, 1 @ u_V)
+        c.R("1", "n1", c.gnd, 1 @ u_Ohm)
+        op = c.simulator(simulator="ngspice-subprocess", temperature=25).operating_point()
+        import numpy as _np
+        v = float(_np.asarray(op["n1"], dtype=float).ravel()[0])
+        ok = abs(v - 1.0) < 1e-6
+        if ok:
+            print("  ✓ ngspice 可用（跑通了 1V 分压的最小仿真，读数正确）")
+            return True
+        print(f"  ✗ ngspice 能跑但读数不对：n1 = {v}（应为 1.0）")
+        return False
     except Exception as exc:  # noqa: BLE001
         print(f"  ✗ 没找到可用的 ngspice：{type(exc).__name__}: {exc}")
         print("    安装方式：")
